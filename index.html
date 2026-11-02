@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="es-CL">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Finanzas Familiar" />
+  <title>Finanzas Familiar — Presupuesto, Escudo CMR y Conciliador</title>
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="stylesheet" href="./styles.css?v=8" />
+  <!-- Librería SheetJS para exportar e importar archivos Microsoft Excel (.xlsx) reales -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+</head>
+<body>
+  <div id="app-root"></div>
+  <div id="toast-container"></div>
+
+  <script type="module" src="./src/app.js?v=8"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', async () => {
+        try {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          for (const reg of regs) {
+            await reg.update();
+          }
+          if (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+            navigator.serviceWorker.register('./sw.js?v=8').catch(() => {});
+          }
+        } catch (e) {}
+      });
+    }
+  </script>
+</body>
+</html>
