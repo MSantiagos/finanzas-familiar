@@ -2,7 +2,6 @@
   "name": "Finanzas Familiar — Presupuesto y Escudo CMR",
   "short_name": "Finanzas Familiar",
   "description": "Control de gastos e ingresos familiares en 5 segundos con Escudo CMR, Cuenta Mujer y Conciliador Antiduplicados.",
-  "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#0f172a",
   "theme_color": "#0f172a",

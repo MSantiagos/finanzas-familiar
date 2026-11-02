@@ -1851,3 +1851,485 @@ body {
     padding-bottom: calc(20px + env(safe-area-inset-bottom));
   }
 }
+
+
+/* ============================================================================
+   SAFE-AREA IPHONE (NOTCH / DYNAMIC ISLAND / HOME INDICATOR) & TOUCH POLISH
+   ============================================================================ */
+body {
+  padding-bottom: calc(98px + env(safe-area-inset-bottom, 0px));
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+.top-header {
+  padding-top: max(10px, calc(env(safe-area-inset-top, 0px) + 8px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+
+#toast-container {
+  bottom: calc(86px + env(safe-area-inset-bottom, 0px));
+}
+
+button,
+.chip-btn,
+.quick-amount-chip,
+.category-tile,
+.pm-pill,
+.mode-pill,
+.tab-btn,
+.author-btn,
+.shield-pill,
+.rec-filter-btn,
+.tx-filter-pill {
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ============================================================================
+   CHIPS DE MONTO RÁPIDO (.quick-amount-chips, .quick-amount-chip)
+   ============================================================================ */
+.quick-amount-chips,
+.quick-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 9px;
+  touch-action: manipulation;
+}
+
+.quick-amount-chip {
+  background: var(--bg-card-solid);
+  border: 1.5px solid var(--border-color);
+  color: var(--text-secondary);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.77rem;
+  font-weight: 800;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: transform 0.12s ease, background-color 0.14s ease, color 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease;
+  box-shadow: var(--shadow-sm);
+}
+
+.quick-amount-chip:hover,
+.quick-amount-chip:focus-visible {
+  background: var(--primary-accent);
+  color: #ffffff;
+  border-color: var(--primary-accent);
+  box-shadow: 0 4px 12px var(--primary-accent-glow);
+  outline: none;
+}
+
+.quick-amount-chip:active {
+  transform: scale(0.95);
+  background: var(--primary-accent);
+  color: #ffffff;
+}
+
+/* ============================================================================
+   RITMO DE GASTO / BURN RATE Y DIAGNÓSTICO EJECUTIVO IA
+   (.burn-rate-card, .diagnosis-panel, .health-score-badge)
+   ============================================================================ */
+.burn-rate-card {
+  background: linear-gradient(135deg, var(--bg-card-solid) 0%, var(--bg-subtle) 100%);
+  border: 1.5px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  padding: 16px 18px;
+  margin-top: 14px;
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.burn-rate-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 5px;
+  background: var(--primary-accent);
+  border-radius: 4px 0 0 4px;
+}
+
+.burn-rate-card.burn-safe::before,
+.burn-rate-card.burn-ok::before {
+  background: var(--emerald);
+}
+
+.burn-rate-card.burn-warn::before {
+  background: var(--amber);
+}
+
+.burn-rate-card.burn-danger::before {
+  background: var(--rose);
+}
+
+.burn-rate-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.burn-rate-title {
+  font-size: 0.96rem;
+  font-weight: 800;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.burn-rate-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(165px, 1fr));
+  gap: 10px;
+}
+
+.burn-rate-metric {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.burn-rate-metric span,
+.burn-rate-metric small {
+  font-size: 0.73rem;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.burn-rate-metric strong {
+  font-size: 1.08rem;
+  font-weight: 800;
+  color: var(--text-main);
+}
+
+.diagnosis-panel {
+  background: var(--bg-card);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1.5px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  padding: 18px;
+  margin-top: 14px;
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.diagnosis-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.diagnosis-title {
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.diagnosis-list,
+.diagnosis-recommendations {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+}
+
+.diagnosis-item {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 10px 13px;
+  font-size: 0.81rem;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  line-height: 1.45;
+}
+
+.health-score-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  background: var(--emerald-bg);
+  color: #059669;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  white-space: nowrap;
+}
+
+[data-theme="dark"] .health-score-badge {
+  color: #6ee7b7;
+}
+
+.health-score-badge.health-good,
+.health-score-badge.score-green,
+.health-score-badge.health-excellent {
+  background: var(--emerald-bg);
+  color: #059669;
+  border-color: rgba(16, 185, 129, 0.42);
+}
+
+[data-theme="dark"] .health-score-badge.health-good,
+[data-theme="dark"] .health-score-badge.score-green,
+[data-theme="dark"] .health-score-badge.health-excellent {
+  color: #6ee7b7;
+}
+
+.health-score-badge.health-warn,
+.health-score-badge.score-yellow {
+  background: var(--amber-bg);
+  color: #d97706;
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+[data-theme="dark"] .health-score-badge.health-warn,
+[data-theme="dark"] .health-score-badge.score-yellow {
+  color: #fcd34d;
+}
+
+.health-score-badge.health-danger,
+.health-score-badge.health-critical,
+.health-score-badge.score-red {
+  background: var(--rose-bg);
+  color: #dc2626;
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+[data-theme="dark"] .health-score-badge.health-danger,
+[data-theme="dark"] .health-score-badge.health-critical,
+[data-theme="dark"] .health-score-badge.score-red {
+  color: #fca5a5;
+}
+
+/* ============================================================================
+   BARRA DE BÚSQUEDA Y FILTROS DEL HISTORIAL (.tx-filter-bar, .tx-search-input, .tx-filter-pills)
+   ============================================================================ */
+.tx-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+}
+
+.tx-search-input {
+  flex: 1 1 220px;
+  min-width: 180px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 11px;
+  font-size: 0.85rem;
+  background: var(--bg-card-solid);
+  color: var(--text-main);
+  outline: none;
+  font-family: inherit;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.tx-search-input:focus {
+  border-color: var(--primary-accent);
+  box-shadow: 0 0 0 3px var(--primary-accent-glow);
+}
+
+.tx-search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.tx-filter-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.tx-filter-pill,
+.tx-filter-pills button {
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  padding: 6px 11px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.14s ease;
+  touch-action: manipulation;
+  white-space: nowrap;
+}
+
+.tx-filter-pill:hover,
+.tx-filter-pills button:hover {
+  border-color: var(--border-strong);
+  color: var(--text-main);
+}
+
+.tx-filter-pill.active,
+.tx-filter-pills button.active {
+  background: var(--primary-accent);
+  color: #ffffff;
+  border-color: var(--primary-accent);
+  box-shadow: 0 3px 10px var(--primary-accent-glow);
+}
+
+@media (max-width: 760px) {
+  .top-header {
+    padding-top: max(8px, calc(env(safe-area-inset-top, 0px) + 6px));
+  }
+
+  .tx-search-input {
+    font-size: 16px; /* Evita auto-zoom de Safari en iPhone al enfocar el buscador */
+    width: 100%;
+  }
+
+  .tx-filter-pills {
+    width: 100%;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+
+  .tx-filter-pills::-webkit-scrollbar {
+    display: none;
+  }
+
+  .burn-rate-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* ============================================================================
+   IMPRESIÓN EJECUTIVA PDF (@media print) — INFORME FINANCIERO FAMILIAR MENSUAL
+   ============================================================================ */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm;
+  }
+
+  :root,
+  [data-theme="dark"] {
+    --bg-page: #ffffff !important;
+    --bg-card: #ffffff !important;
+    --bg-card-solid: #ffffff !important;
+    --bg-subtle: #f8fafc !important;
+    --text-main: #0f172a !important;
+    --text-secondary: #334155 !important;
+    --text-muted: #475569 !important;
+    --border-color: #cbd5e1 !important;
+    --border-strong: #94a3b8 !important;
+  }
+
+  body {
+    background: #ffffff !important;
+    background-image: none !important;
+    color: #0f172a !important;
+    padding: 0 !important;
+    font-size: 10.5pt;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Ocultar controles interactivos, formularios de edición y barras flotantes */
+  .main-tabs,
+  .author-toggle,
+  .btn-theme-toggle,
+  .btn-excel-top,
+  .demo-banner,
+  .mode-pills,
+  #quick-expense-form,
+  .split-receipt-wrapper,
+  .internal-subnav,
+  .add-fixed-form,
+  .reconcile-input-area,
+  .reconcile-filter-tabs,
+  .tx-filter-bar,
+  .btn-edit-tx,
+  .btn-delete-tx,
+  .btn-clear-amount,
+  .btn-primary-giant,
+  .btn-primary,
+  .btn-secondary,
+  .btn-secondary-sm,
+  .btn-confirm-fixed,
+  .btn-outline-danger-sm,
+  #toast-container,
+  .modal-backdrop,
+  .no-print {
+    display: none !important;
+  }
+
+  .top-header {
+    position: static !important;
+    background: #0f172a !important;
+    color: #ffffff !important;
+    border-radius: 12px;
+    padding: 14px 18px !important;
+    margin-bottom: 14px;
+    box-shadow: none !important;
+  }
+
+  .main-container {
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .card-panel,
+  .kpi-card,
+  .burn-rate-card,
+  .diagnosis-panel,
+  .budget-item-card,
+  .tx-row,
+  .fixed-row,
+  .insight-box {
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .quick-shields-bar {
+    overflow: visible !important;
+    flex-wrap: wrap !important;
+  }
+
+  .shield-pill {
+    border: 1px solid rgba(255, 255, 255, 0.35) !important;
+  }
+}

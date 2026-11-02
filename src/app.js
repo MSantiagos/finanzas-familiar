@@ -1,7 +1,7 @@
 import {
   PAYMENT_METHODS,
   SAMPLE_BANK_STATEMENT_TEXT
-} from './data/defaults.js?v=8';
+} from './data/defaults.js?v=10';
 import {
   loadState,
   saveState,
@@ -12,8 +12,9 @@ import {
   getTodayISO,
   pushStateToGoogleSheets,
   pullStateFromGoogleSheets,
-  syncFromLocalWifiServer
-} from './services/storage.js?v=8';
+  syncFromLocalWifiServer,
+  syncFromCloudGoogleSheets
+} from './services/storage.js?v=10';
 import {
   parseBankStatementText,
   reconcileStatementRows,
@@ -21,17 +22,104 @@ import {
   formatLiveCLPInput,
   normalizeContactKey,
   extractContactDisplayName
-} from './services/reconciler.js?v=8';
+} from './services/reconciler.js?v=10';
 import {
   scanReceiptWithGemini,
   classifyStatementRowsWithGemini,
-  getDemoScannedReceipt
-} from './services/geminiScanner.js?v=8';
-import { exportStateToExcel } from './services/excelExport.js?v=8';
+  getDemoScannedReceipt,
+  generateMonthlyFamilyAuditWithGemini
+} from './services/geminiScanner.js?v=10';
+import { exportStateToExcel } from './services/excelExport.js?v=10';
+import {
+  calculateMonthlyFinancialSummary,
+  calculateBurnRateAndProjection,
+  calculateLoansLedger,
+  filterTransactions,
+  calculateFilteredTransactionsTotals,
+  generateInstantFamilyDiagnosis
+} from './domain/financialEngine.js?v=10';
 
 // Estado global en memoria de la aplicación
 let appState = loadState();
 let userPrefs = loadUserPrefs();
+
+function extractWebhookUrl(rawInput) {
+  const trimmed = String(rawInput || '').trim();
+  if (!trimmed) return '';
+  try {
+    const parsed = new URL(trimmed);
+    const embeddedSync = parsed.searchParams.get('sync');
+    if (embeddedSync && embeddedSync.startsWith('https://script.google.com/')) {
+      return embeddedSync.trim();
+    }
+  } catch {}
+  return trimmed;
+}
+
+function applyMagicLinkFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const syncParam = extractWebhookUrl(params.get('sync') || '');
+    const geminiParam = (params.get('gemini') || '').trim();
+    const authorParam = (params.get('author') || params.get('user') || '').trim().toLowerCase();
+
+    let prefsChanged = false;
+    let stateChanged = false;
+
+    if (syncParam && syncParam.startsWith('https://script.google.com/')) {
+      userPrefs.googleSheetsWebhookUrl = syncParam;
+      if (!appState.sharedIntegrations) appState.sharedIntegrations = {};
+      appState.sharedIntegrations.googleSheetsWebhookUrl = syncParam;
+      prefsChanged = true;
+      stateChanged = true;
+    }
+
+    if (geminiParam) {
+      userPrefs.geminiApiKey = geminiParam;
+      if (!appState.sharedIntegrations) appState.sharedIntegrations = {};
+      appState.sharedIntegrations.geminiApiKey = geminiParam;
+      prefsChanged = true;
+      stateChanged = true;
+    }
+
+    if (authorParam === 'ella' || authorParam === 'marie') {
+      userPrefs.activeAuthor = 'ella';
+      userPrefs.defaultPaymentMethod = 'cuenta_mujer';
+      prefsChanged = true;
+    } else if (authorParam === 'el' || authorParam === 'mauricio') {
+      userPrefs.activeAuthor = 'el';
+      userPrefs.defaultPaymentMethod = 'cmr_falabella';
+      prefsChanged = true;
+    }
+
+    if (prefsChanged) saveUserPrefs(userPrefs);
+    if (stateChanged) saveState(appState, { skipCloudSync: true, skipLocalServerSync: true });
+  } catch (e) {
+    console.warn('No se pudo leer parámetros del Link Mágico:', e);
+  }
+}
+
+applyMagicLinkFromUrl();
+
+function getPublicOnlineBaseUrl() {
+  if (window.location.hostname.endsWith('github.io')) {
+    return window.location.origin + window.location.pathname;
+  }
+  return 'https://msantiagos.github.io/finanzas-familiar/';
+}
+
+function buildMagicInstallLink(targetAuthor = 'ella') {
+  const baseUrl = getPublicOnlineBaseUrl();
+  const url = new URL(baseUrl);
+  url.searchParams.set('author', targetAuthor === 'ella' ? 'ella' : 'el');
+  const webhook =
+    userPrefs.googleSheetsWebhookUrl || appState.sharedIntegrations?.googleSheetsWebhookUrl || '';
+  const geminiKey =
+    userPrefs.geminiApiKey || appState.sharedIntegrations?.geminiApiKey || '';
+  if (webhook) url.searchParams.set('sync', webhook);
+  if (geminiKey) url.searchParams.set('gemini', geminiKey);
+  return url.toString();
+}
 let activeTab = 'register'; // 'register' | 'budget' | 'fixed' | 'reconcile' | 'cloud'
 let registerMode = 'quick'; // 'quick' | 'split' | 'internal'
 let internalSubTab = 'wife'; // 'wife' | 'cmr' | 'income' | 'loans'
@@ -42,6 +130,24 @@ let pendingSyncRender = false;
 // Estado de edición rápida en modal (1 toque) y último borrado para "Deshacer"
 let editingTxId = null;
 let lastDeletedTx = null;
+
+// Estado del buscador y filtros instantáneos del historial de movimientos
+let txFilterState = {
+  searchQuery: '',
+  paymentMethod: 'all', // 'all' | 'cmr_falabella' | 'bch_all' | 'cuenta_mujer' | 'efectivo'
+  author: 'all', // 'all' | 'el' | 'ella'
+  reconciledStatus: 'all', // 'all' | 'pending' | 'reconciled'
+  categoryId: 'all'
+};
+
+// Estado del Diagnóstico Ejecutivo Familiar (0 ms + enriquecimiento opcional con Gemini IA)
+let diagnosisState = {
+  isOpen: false,
+  isLoadingAI: false,
+  aiAuditResult: null,
+  aiAuditMonth: null,
+  aiError: ''
+};
 
 // Estado del formulario de Gasto Rápido (5 segundos)
 let quickForm = {
@@ -126,182 +232,22 @@ function isUserTyping() {
 }
 
 /**
- * Motor Contable Familiar con Arrastre Multi-Mes (Rollover) y Libro de Préstamos por Persona.
+ * Motor Contable Familiar con Arrastre Multi-Mes (Rollover), Burn Rate y Diagnóstico Ejecutivo (0 ms).
+ * Delega la lógica matemática pura a `src/domain/financialEngine.js`.
  */
 function getMonthMetrics(ym) {
   ensureMonthBudget(appState, ym);
-  const monthCfg = appState.monthlyBudgets[ym];
-  const allTxs = appState.transactions || [];
-  const txs = allTxs.filter((t) => String(t.date || '').startsWith(ym));
-
-  let realIncome = 0;
-  let totalExpense = 0;
-  let cmrSpent = 0;
-  let cmrPaid = 0;
-  let transferredToWife = 0;
-  let spentFromWifeAccount = 0;
-  let savingsWithdrawnThisMonth = 0;
-
-  // Arrastre acumulado hasta el cierre del mes consultado (para que el día 1 del mes no caiga a $0 la deuda CMR ni el saldo de Marie)
-  let cmrCumulativeSpentUpToMonth = 0;
-  let cmrCumulativePaidUpToMonth = 0;
-  let cmrPrevMonthsSpent = 0;
-  let cmrPrevMonthsPaid = 0;
-
-  let wifeCumulativeTransferredUpToMonth = 0;
-  let wifeCumulativeSpentUpToMonth = 0;
-  let wifePrevMonthsTransferred = 0;
-  let wifePrevMonthsSpent = 0;
-
-  // Sub-libro de préstamos agrupado por persona (histórico acumulado)
-  let totalLoansOwedToOthers = 0;
-  let totalLoansReceivable = 0;
-  const personLedgerMap = {};
-
-  allTxs.forEach((tx) => {
-    const amt = Number(tx.amount || 0);
-    const txYm = String(tx.date || '').slice(0, 7);
-    const isUpToActiveMonth = txYm <= ym;
-    const isStrictlyBeforeActiveMonth = txYm < ym;
-
-    if (isUpToActiveMonth) {
-      if (tx.type === 'expense' && tx.paymentMethod === 'cmr_falabella') {
-        cmrCumulativeSpentUpToMonth += amt;
-        if (isStrictlyBeforeActiveMonth) cmrPrevMonthsSpent += amt;
-      }
-      if (tx.type === 'cmr_payment') {
-        cmrCumulativePaidUpToMonth += amt;
-        if (isStrictlyBeforeActiveMonth) cmrPrevMonthsPaid += amt;
-      }
-      if (tx.type === 'transfer_wife') {
-        wifeCumulativeTransferredUpToMonth += amt;
-        if (isStrictlyBeforeActiveMonth) wifePrevMonthsTransferred += amt;
-      }
-      if (tx.type === 'expense' && tx.paymentMethod === 'cuenta_mujer') {
-        wifeCumulativeSpentUpToMonth += amt;
-        if (isStrictlyBeforeActiveMonth) wifePrevMonthsSpent += amt;
-      }
-    }
-
-    // Registro por persona para préstamos y cuentas compartidas
-    if (['loan_received', 'loan_repaid', 'loan_given', 'loan_collected'].includes(tx.type)) {
-      const personName = extractContactDisplayName(tx.note);
-      const personKey = personName.toLowerCase();
-      if (!personLedgerMap[personKey]) {
-        personLedgerMap[personKey] = {
-          key: personKey,
-          name: personName,
-          owedByUs: 0,   // Plata que nos prestaron y debemos devolver
-          owedToUs: 0,   // Plata que prestamos / cuenta compartida que nos deben
-          lastDate: tx.date,
-          lastNote: tx.note
-        };
-      }
-      const p = personLedgerMap[personKey];
-      if (String(tx.date) >= String(p.lastDate)) {
-        p.lastDate = tx.date;
-        p.lastNote = tx.note;
-      }
-      if (tx.type === 'loan_received') p.owedByUs += amt;
-      if (tx.type === 'loan_repaid') p.owedByUs = Math.max(0, p.owedByUs - amt);
-      if (tx.type === 'loan_given') p.owedToUs += amt;
-      if (tx.type === 'loan_collected') p.owedToUs = Math.max(0, p.owedToUs - amt);
-    }
-  });
-
-  const loansByPerson = Object.values(personLedgerMap).filter(
-    (p) => p.owedByUs > 0 || p.owedToUs > 0
-  );
-  loansByPerson.forEach((p) => {
-    totalLoansOwedToOthers += p.owedByUs;
-    totalLoansReceivable += p.owedToUs;
-  });
-
-  const spentByCategory = {};
-  (appState.categories || []).forEach((c) => {
-    spentByCategory[c.id] = 0;
-  });
-
-  txs.forEach((tx) => {
-    const amt = Number(tx.amount || 0);
-    if (tx.type === 'income') {
-      realIncome += amt;
-    } else if (tx.type === 'expense') {
-      totalExpense += amt;
-      spentByCategory[tx.categoryId] = (spentByCategory[tx.categoryId] || 0) + amt;
-      if (tx.paymentMethod === 'cmr_falabella') {
-        cmrSpent += amt;
-      }
-      if (tx.paymentMethod === 'cuenta_mujer') {
-        spentFromWifeAccount += amt;
-      }
-    } else if (tx.type === 'reimbursement') {
-      totalExpense = Math.max(0, totalExpense - amt);
-      spentByCategory[tx.categoryId] = Math.max(0, (spentByCategory[tx.categoryId] || 0) - amt);
-    } else if (tx.type === 'savings_withdrawal') {
-      savingsWithdrawnThisMonth += amt;
-    } else if (tx.type === 'transfer_wife') {
-      transferredToWife += amt;
-    } else if (tx.type === 'cmr_payment') {
-      cmrPaid += amt;
-    }
-  });
-
-  let totalBudgetedCategories = 0;
-  (appState.categories || []).forEach((cat) => {
-    totalBudgetedCategories += Number(monthCfg.categories?.[cat.id] ?? cat.defaultBudget ?? 0);
-  });
-
-  const effectiveIncome = realIncome > 0 ? realIncome : Number(monthCfg.incomeTarget || 2350000);
-  const savingsGoal = Number(monthCfg.savingsGoal || 250000);
-  const spendableAfterSavings = effectiveIncome - savingsGoal;
-  const remainingSpendable = spendableAfterSavings - totalExpense;
-
-  // Saldos con arrastre inteligente entre meses
-  const cmrCarryoverPrev = Math.max(0, cmrPrevMonthsSpent - cmrPrevMonthsPaid);
-  const cmrPendingReserve = Math.max(0, cmrCumulativeSpentUpToMonth - cmrCumulativePaidUpToMonth);
-
-  const wifeCarryoverPrev = wifePrevMonthsTransferred - wifePrevMonthsSpent;
-  const wifeWalletRemaining = wifeCumulativeTransferredUpToMonth - wifeCumulativeSpentUpToMonth;
-
-  // Días del mes para calcular ritmo y aguja "📍 Hoy"
-  const [yearNum, monthNum] = ym.split('-').map(Number);
-  const daysInMonth = new Date(yearNum, monthNum, 0).getDate();
-  const now = new Date();
-  const currentYearMonth = getCurrentYearMonth();
-  const currentDay = ym === currentYearMonth ? now.getDate() : daysInMonth;
-  const daysRemaining = Math.max(1, daysInMonth - currentDay + 1);
-  const monthProgressPct = Math.round((currentDay / daysInMonth) * 100);
-  const budgetUsedPct = spendableAfterSavings > 0 ? Math.round((totalExpense / spendableAfterSavings) * 100) : 0;
+  const todayISO = getTodayISO();
+  const summary = calculateMonthlyFinancialSummary(appState, ym, todayISO);
+  const burnRate = calculateBurnRateAndProjection(summary, ym, todayISO);
+  const loansLedger = summary.loansLedger || calculateLoansLedger(appState.transactions || [], appState.learnedContacts || {});
+  const instantDiagnosis = generateInstantFamilyDiagnosis(summary, burnRate, loansLedger);
 
   return {
-    monthCfg,
-    txs,
-    realIncome,
-    effectiveIncome,
-    savingsGoal,
-    spendableAfterSavings,
-    totalBudgetedCategories,
-    totalExpense,
-    remainingSpendable,
-    cmrSpent,
-    cmrPaid,
-    cmrCarryoverPrev,
-    cmrPendingReserve,
-    transferredToWife,
-    spentFromWifeAccount,
-    wifeCarryoverPrev,
-    wifeWalletRemaining,
-    totalLoansOwedToOthers,
-    totalLoansReceivable,
-    loansByPerson,
-    savingsWithdrawnThisMonth,
-    spentByCategory,
-    daysInMonth,
-    currentDay,
-    daysRemaining,
-    monthProgressPct,
-    budgetUsedPct
+    ...summary,
+    burnRate,
+    loansLedger,
+    instantDiagnosis
   };
 }
 
@@ -411,10 +357,20 @@ export function renderApp() {
           <div>
             <div class="brand-title-row">
               <h1 class="brand-title">Finanzas Familiar</h1>
-              <span class="sync-live-pill" title="Sincronización automática con fusión inteligente activa">
+              <button
+                type="button"
+                class="sync-live-pill"
+                data-action="header-sync-click"
+                style="cursor:pointer;border:none;"
+                title="Toca para sincronizar ahora con Google Sheets o configurar el link de Marie"
+              >
                 <span class="sync-dot"></span>
-                <span>Sync Vivo</span>
-              </span>
+                <span>${
+                  (userPrefs.googleSheetsWebhookUrl || appState.sharedIntegrations?.googleSheetsWebhookUrl)
+                    ? '☁️ Online Vivo'
+                    : '☁️ Conectar Online'
+                }</span>
+              </button>
             </div>
             <p class="brand-subtitle">Control Anti-Fuga de Ahorros • Banco de Chile & CMR</p>
           </div>
@@ -533,10 +489,148 @@ export function renderApp() {
 }
 
 // ============================================================================
+// WIDGET DE RITMO DEL MES (BURN RATE) & DIAGNÓSTICO EJECUTIVO FAMILIAR (0 ms + IA)
+// ============================================================================
+function renderBurnRateAndDiagnosisWidget(metrics) {
+  const burn = metrics.burnRate || calculateBurnRateAndProjection(metrics, activeYearMonth, getTodayISO());
+  const hasAiForMonth = diagnosisState.aiAuditResult && diagnosisState.aiAuditMonth === activeYearMonth;
+  const diag = hasAiForMonth ? diagnosisState.aiAuditResult : metrics.instantDiagnosis;
+
+  const paceBadgeMap = {
+    bajo_control: { label: '🟢 Ritmo Bajo Control', cls: 'bar-green' },
+    alerta_ritmo: { label: '🟡 Alerta de Ritmo', cls: 'bar-yellow' },
+    sobregiro_proyectado: { label: '🔴 Sobregiro Proyectado', cls: 'bar-red' }
+  };
+  const paceMeta = paceBadgeMap[burn.paceStatus] || paceBadgeMap.bajo_control;
+  const barWidth = Math.min(100, Math.max(0, burn.budgetUsedPct));
+  const hasApiKey = Boolean(userPrefs.geminiApiKey || appState.sharedIntegrations?.geminiApiKey);
+
+  return `
+    <section class="card-panel" style="margin-bottom:16px;padding:14px 16px;">
+      <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px;">
+        <div>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;">
+            <strong style="font-size:0.92rem;">🔥 Ritmo del Mes y Presupuesto Diario Seguro</strong>
+            <span class="sem-badge ${paceMeta.cls}">${paceMeta.label}</span>
+          </div>
+          <p style="font-size:0.78rem;color:var(--text-secondary);margin-top:3px;">
+            Día <strong>${burn.daysElapsed} de ${burn.daysInMonth}</strong> (${burn.daysRemaining} días restantes) •
+            Pueden gastar hasta <strong>${formatCLP(burn.dailySafeSpend)}/día</strong> sin tocar el ahorro de <strong>${formatCLP(metrics.savingsGoal)}</strong>
+            ${metrics.pendingFixedTotal > 0 ? ` • <em>Libre tras fijos pendientes: <strong>${formatCLP(burn.dailySafeSpendAfterFixed)}/día</strong></em>` : ''}
+          </p>
+        </div>
+
+        <button
+          type="button"
+          class="${diagnosisState.isOpen ? 'btn-secondary-sm' : 'btn-primary'}"
+          data-action="toggle-family-diagnosis"
+          style="white-space:nowrap;font-size:0.79rem;padding:8px 13px;"
+        >
+          ${diagnosisState.isOpen ? '🔼 Ocultar Diagnóstico' : '🧠 Ver Diagnóstico Familiar & Plan de Acción'}
+        </button>
+      </div>
+
+      <div class="progress-track-wrapper" style="margin:12px 0 6px;">
+        <div class="pace-marker-line" style="left:${burn.monthProgressPct}%" title="Avance del calendario: ${burn.monthProgressPct}%">
+          <span class="pace-marker-label">📍Hoy (${burn.monthProgressPct}%)</span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill ${paceMeta.cls}" style="width:${barWidth}%"></div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;font-size:0.74rem;color:var(--text-muted);">
+        <span>Gastado: <strong>${formatCLP(metrics.totalExpense)}</strong> (${burn.budgetUsedPct}% del disponible) • Promedio variable: <strong>${formatCLP(burn.variableDailyBurnRate)}/día</strong></span>
+        <span>
+          Proyección fin de mes: <strong>${formatCLP(burn.projectedMonthEndSpend)}</strong>
+          (${burn.projectedSurplusOrDeficit >= 0
+            ? `✅ Holgura +${formatCLP(burn.projectedSurplusOrDeficit)}`
+            : `⚠️ Excede por ${formatCLP(Math.abs(burn.projectedSurplusOrDeficit))}`})
+        </span>
+      </div>
+
+      ${diagnosisState.isOpen && diag ? `
+        <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border-color);">
+          <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;">
+            <div style="display:flex;align-items:center;gap:10px;">
+              <div style="background:var(--primary-accent);color:#fff;font-weight:900;font-size:0.95rem;padding:6px 11px;border-radius:11px;">
+                ${diag.healthScore}/100
+              </div>
+              <div>
+                <div style="display:flex;align-items:center;gap:6px;">
+                  <strong style="font-size:0.88rem;">Diagnóstico Ejecutivo Familiar</strong>
+                  <span class="sem-badge ${diag.healthScore >= 80 ? 'bar-green' : diag.healthScore >= 60 ? 'bar-yellow' : 'bar-red'}">${diag.statusBadge}</span>
+                  ${hasAiForMonth ? `<span class="badge-split">✨ Gemini 3.8 Flash</span>` : `<span class="badge-reconciled">⚡ Instantáneo 0 ms</span>`}
+                </div>
+                <p style="font-size:0.8rem;color:var(--text-main);margin-top:2px;">${diag.headline}</p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              class="btn-secondary-sm"
+              data-action="run-ai-family-diagnosis"
+              ${diagnosisState.isLoadingAI ? 'disabled' : ''}
+              title="${hasApiKey ? 'Analizar en profundidad con Gemini 3.8 Flash' : 'Configura tu clave gratuita en la pestaña iPhone & IA'}"
+            >
+              ${diagnosisState.isLoadingAI
+                ? '⏳ Consultando a Gemini 3.8 Flash...'
+                : hasAiForMonth
+                  ? '🔄 Actualizar Análisis IA'
+                  : '✨ Enriquecer con Gemini 3.8 Flash'}
+            </button>
+          </div>
+
+          ${diagnosisState.aiError ? `
+            <div class="scan-error-box" style="margin-bottom:10px;">
+              ⚠️ ${diagnosisState.aiError}
+            </div>
+          ` : ''}
+
+          <div class="insights-grid" style="margin-bottom:12px;">
+            <div class="insight-box insight-cmr">
+              <h4>🟢 Diagnóstico Escudo CMR</h4>
+              <p>${String(diag.cmrShieldDiagnosis)}</p>
+            </div>
+            <div class="insight-box insight-wife">
+              <h4>👩🏻 Diagnóstico Cuenta Marie</h4>
+              <p>${String(diag.wifeAccountDiagnosis)}</p>
+            </div>
+          </div>
+
+          ${Array.isArray(diag.categoryAlerts) && diag.categoryAlerts.length > 0 ? `
+            <div style="margin-bottom:12px;">
+              <strong style="font-size:0.78rem;display:block;margin-bottom:6px;color:var(--text-secondary);">🚦 Alertas de Categorías (${diag.categoryAlerts.length}):</strong>
+              <div style="display:flex;flex-direction:column;gap:6px;">
+                ${diag.categoryAlerts.slice(0, 3).map((alert) => `
+                  <div style="font-size:0.78rem;padding:8px 11px;border-radius:10px;background:var(--bg-subtle);border-left:3px solid ${alert.status === 'danger' || alert.severity === 'CRITICO' ? '#ef4444' : '#f59e0b'};">
+                    <strong>${alert.categoryName || `${alert.icon || ''} ${alert.name || ''}`}:</strong>
+                    <span>${alert.recommendation || `${alert.message || ''} ${alert.actionableTip || ''}`}</span>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          ` : ''}
+
+          <div style="background:var(--bg-subtle);border:1px solid var(--border-color);border-radius:12px;padding:10px 13px;">
+            <strong style="font-size:0.8rem;display:block;margin-bottom:6px;">🎯 Top 3 Acciones Prioritarias para esta Semana:</strong>
+            <ol style="margin-left:18px;font-size:0.79rem;display:flex;flex-direction:column;gap:4px;color:var(--text-main);">
+              ${(diag.top3Actions || []).map((act) => `<li>${act}</li>`).join('')}
+            </ol>
+          </div>
+        </div>
+      ` : ''}
+    </section>
+  `;
+}
+
+// ============================================================================
 // PESTAÑA 1: REGISTRAR (5 SEGUNDOS + BOLETA DIVIDIDA IA + TRASPASOS Y PRÉSTAMOS)
 // ============================================================================
 function renderRegisterTab(metrics) {
   return `
+    ${renderBurnRateAndDiagnosisWidget(metrics)}
+
     <section class="card-panel">
       <div class="mode-pills">
         <button type="button" class="mode-pill ${registerMode === 'quick' ? 'active' : ''}" data-action="set-register-mode" data-mode="quick">
@@ -593,6 +687,7 @@ function renderQuickExpenseForm(metrics) {
           <button type="button" class="chip-btn" data-action="quick-add-amount" data-val="10000">+$10.000</button>
           <button type="button" class="chip-btn" data-action="quick-add-amount" data-val="20000">+$20.000</button>
           <button type="button" class="chip-btn" data-action="quick-add-amount" data-val="50000">+$50.000</button>
+          <button type="button" class="chip-btn" data-action="quick-add-amount" data-val="clear">🧹 Limpiar</button>
         </div>
       </div>
 
@@ -1008,7 +1103,56 @@ function renderInternalAndIncomeForm(metrics) {
   `;
 }
 
-function renderRecentTransactionsList(metrics) {
+function hasActiveTxFilters() {
+  return (
+    Boolean(txFilterState.searchQuery && txFilterState.searchQuery.trim()) ||
+    txFilterState.paymentMethod !== 'all' ||
+    txFilterState.author !== 'all' ||
+    txFilterState.reconciledStatus !== 'all' ||
+    txFilterState.categoryId !== 'all'
+  );
+}
+
+function renderFilteredSummaryBarHtml(filteredTxs, totalMonthCount) {
+  const totals = calculateFilteredTransactionsTotals(filteredTxs);
+  const isFiltered = hasActiveTxFilters();
+
+  return `
+    <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;">
+      <span>
+        Mostrando <strong>${totals.count}</strong> de ${totalMonthCount} movimientos •
+        Total filtrado: <strong>${formatCLP(totals.totalAmount)}</strong>
+        ${totals.netExpenseTotal !== totals.totalAmount ? `<span class="text-muted">(Gasto neto: ${formatCLP(totals.netExpenseTotal)})</span>` : ''}
+      </span>
+      ${isFiltered ? `
+        <button type="button" class="btn-secondary-sm" data-action="clear-tx-filters">
+          ✕ Limpiar filtros
+        </button>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderTransactionRowsHtml(filteredTxs, totalMonthCount) {
+  if (totalMonthCount === 0) {
+    return `
+      <div class="empty-state">
+        No hay movimientos en ${getMonthNameLabel(activeYearMonth)}. ¡Usa el visor de arriba para registrar el primero en 5 segundos!
+      </div>
+    `;
+  }
+
+  if (filteredTxs.length === 0) {
+    return `
+      <div class="empty-state">
+        🔍 No se encontraron movimientos con los filtros actuales.
+        <div style="margin-top:8px;">
+          <button type="button" class="btn-secondary-sm" data-action="clear-tx-filters">Restablecer búsqueda y filtros</button>
+        </div>
+      </div>
+    `;
+  }
+
   const categoriesMap = {};
   (appState.categories || []).forEach((c) => {
     categoriesMap[c.id] = c;
@@ -1018,118 +1162,200 @@ function renderRecentTransactionsList(metrics) {
     pmMap[p.id] = p;
   });
 
-  const sorted = metrics.txs
-    .slice()
-    .sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  return `
+    <div class="tx-list">
+      ${filteredTxs.map((tx) => {
+        const cat = categoriesMap[tx.categoryId];
+        const pm = pmMap[tx.paymentMethod];
+        const isIncome = tx.type === 'income';
+        const isWifeTransfer = tx.type === 'transfer_wife';
+
+        let icon = cat?.icon || '📌';
+        let title = cat?.name || 'Movimiento';
+        let amountClass = 'tx-amt-expense';
+        let prefix = '-';
+
+        if (isIncome) {
+          icon = '💰';
+          title = 'Ingreso Familiar';
+          amountClass = 'tx-amt-income';
+          prefix = '+';
+        } else if (tx.type === 'reimbursement') {
+          icon = '↩️';
+          title = `Reembolso a ${cat?.name || 'Categoría'}`;
+          amountClass = 'tx-amt-income';
+          prefix = '+';
+        } else if (isWifeTransfer) {
+          icon = '👩🏻💸';
+          title = 'Traspaso a Marie (No duplica gasto)';
+          amountClass = 'tx-amt-internal';
+          prefix = '⇄ ';
+        } else if (tx.type === 'cmr_payment') {
+          icon = '🟢💳';
+          title = 'Pago Facturación CMR';
+          amountClass = 'tx-amt-internal';
+          prefix = '⇄ ';
+        } else if (tx.type === 'loan_received') {
+          icon = '📥⏳';
+          title = 'Préstamo Recibido (Por devolver)';
+          amountClass = 'tx-amt-internal';
+          prefix = '⏳ ';
+        } else if (tx.type === 'loan_repaid') {
+          icon = '📤✅';
+          title = 'Devolución de Préstamo Pagada';
+          amountClass = 'tx-amt-internal';
+          prefix = '⇄ ';
+        } else if (tx.type === 'loan_given') {
+          icon = '🤝📤';
+          title = 'Por Cobrar (Nos deben devolver)';
+          amountClass = 'tx-amt-internal';
+          prefix = '🤝 ';
+        } else if (tx.type === 'loan_collected') {
+          icon = '🤝💵';
+          title = 'Préstamo / Vaca Cobrada';
+          amountClass = 'tx-amt-internal';
+          prefix = '⇄ ';
+        } else if (tx.type === 'savings_withdrawal') {
+          icon = '🚨🏦';
+          title = 'Rescate desde Ahorros';
+          amountClass = 'tx-amt-internal';
+          prefix = '⚠️ ';
+        }
+
+        const isSplitTx = Boolean(tx.splitGroupId || tx.receiptGroupId);
+        const splitTotalBadge = tx.splitTotalAmount ? ` (de ${formatCLP(tx.splitTotalAmount)})` : '';
+
+        return `
+          <div class="tx-row">
+            <div class="tx-left" data-action="open-edit-tx" data-id="${tx.id}" title="Toca para editar este movimiento">
+              <div class="tx-icon-circle">${icon}</div>
+              <div class="tx-info">
+                <div class="tx-title-line">
+                  <strong>${title}</strong>
+                  ${isSplitTx ? `<span class="badge-split" title="Boleta dividida vinculada (${tx.splitGroupId || tx.receiptGroupId})">✂️ Dividida${splitTotalBadge}</span>` : ''}
+                  ${tx.fixedTemplateId ? `<span class="badge-fixed">🏠 Fijo</span>` : ''}
+                  ${tx.reconciled ? `<span class="badge-reconciled">✅ Banco OK</span>` : ''}
+                </div>
+                <div class="tx-note-line">${tx.note || 'Sin nota adicional'}</div>
+                <div class="tx-meta-line">
+                  <span>📅 ${tx.date}</span>
+                  <span>•</span>
+                  <span>${pm ? `${pm.icon} ${pm.shortName}` : tx.paymentMethod}</span>
+                  <span>•</span>
+                  <span>${tx.author === 'ella' ? '👩🏻 Marie' : '🧔‍♂️ Mauricio'}</span>
+                </div>
+              </div>
+            </div>
+            <div class="tx-right">
+              <div class="tx-amount ${amountClass}">${prefix}${formatCLP(tx.amount)}</div>
+              <button type="button" class="btn-edit-tx" data-action="open-edit-tx" data-id="${tx.id}" title="Editar">
+                ✏️
+              </button>
+              <button type="button" class="btn-delete-tx" data-action="delete-tx" data-id="${tx.id}" title="Eliminar">
+                🗑️
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+/**
+ * Actualiza solo el contenedor de resultados filtrados sin desmontar `#tx-search-input`
+ * para mantener el teclado del iPhone abierto mientras se escribe.
+ */
+function updateFilteredTransactionsDOM() {
+  const summaryEl = document.getElementById('tx-filtered-summary-bar');
+  const listEl = document.getElementById('tx-filtered-list-container');
+  if (!summaryEl || !listEl) return;
+
+  const monthTxs = (appState.transactions || []).filter((t) =>
+    String(t.date || '').startsWith(activeYearMonth)
+  );
+  const filteredTxs = filterTransactions(monthTxs, {
+    ...txFilterState,
+    yearMonth: activeYearMonth,
+    categories: appState.categories || []
+  });
+
+  summaryEl.innerHTML = renderFilteredSummaryBarHtml(filteredTxs, monthTxs.length);
+  listEl.innerHTML = renderTransactionRowsHtml(filteredTxs, monthTxs.length);
+}
+
+function renderRecentTransactionsList(metrics) {
+  const monthTxs = metrics.txs || [];
+  const filteredTxs = filterTransactions(monthTxs, {
+    ...txFilterState,
+    yearMonth: activeYearMonth,
+    categories: appState.categories || []
+  });
 
   return `
     <section class="card-panel mt-section">
       <div class="section-header-row">
         <div>
-          <h2 class="section-title">📋 Movimientos de ${getMonthNameLabel(activeYearMonth)} (${sorted.length})</h2>
-          <p class="section-subtitle">Toca cualquier movimiento para editarlo en 1 segundo</p>
+          <h2 class="section-title">📋 Movimientos de ${getMonthNameLabel(activeYearMonth)} (${monthTxs.length})</h2>
+          <p class="section-subtitle">Busca al instante o toca cualquier movimiento para editarlo en 1 segundo</p>
         </div>
       </div>
 
-      ${sorted.length === 0 ? `
-        <div class="empty-state">
-          No hay movimientos en ${getMonthNameLabel(activeYearMonth)}. ¡Usa el visor de arriba para registrar el primero en 5 segundos!
+      <!-- Barra de Búsqueda Instantánea y Filtros Rápidos (Mejora 3) -->
+      <div style="background:var(--bg-subtle);border:1px solid var(--border-color);border-radius:14px;padding:12px;margin-bottom:12px;">
+        <div class="form-row-two" style="margin-bottom:8px;">
+          <div class="input-group">
+            <input
+              type="search"
+              id="tx-search-input"
+              class="text-input"
+              placeholder="🔎 Buscar por nota, comercio, categoría o monto (ej: Lider, 48.500)..."
+              value="${txFilterState.searchQuery}"
+              autocomplete="off"
+            />
+          </div>
+          <div class="input-group">
+            <select id="tx-filter-category" class="text-input">
+              <option value="all" ${txFilterState.categoryId === 'all' ? 'selected' : ''}>📂 Todas las categorías</option>
+              ${(appState.categories || []).map((c) => `
+                <option value="${c.id}" ${txFilterState.categoryId === c.id ? 'selected' : ''}>${c.icon} ${c.name}</option>
+              `).join('')}
+            </select>
+          </div>
         </div>
-      ` : `
-        <div class="tx-list">
-          ${sorted.map((tx) => {
-            const cat = categoriesMap[tx.categoryId];
-            const pm = pmMap[tx.paymentMethod];
-            const isIncome = tx.type === 'income';
-            const isWifeTransfer = tx.type === 'transfer_wife';
 
-            let icon = cat?.icon || '📌';
-            let title = cat?.name || 'Movimiento';
-            let amountClass = 'tx-amt-expense';
-            let prefix = '-';
-
-            if (isIncome) {
-              icon = '💰';
-              title = 'Ingreso Familiar';
-              amountClass = 'tx-amt-income';
-              prefix = '+';
-            } else if (tx.type === 'reimbursement') {
-              icon = '↩️';
-              title = `Reembolso a ${cat?.name || 'Categoría'}`;
-              amountClass = 'tx-amt-income';
-              prefix = '+';
-            } else if (isWifeTransfer) {
-              icon = '👩🏻💸';
-              title = 'Traspaso a Marie (No duplica gasto)';
-              amountClass = 'tx-amt-internal';
-              prefix = '⇄ ';
-            } else if (tx.type === 'cmr_payment') {
-              icon = '🟢💳';
-              title = 'Pago Facturación CMR';
-              amountClass = 'tx-amt-internal';
-              prefix = '⇄ ';
-            } else if (tx.type === 'loan_received') {
-              icon = '📥⏳';
-              title = 'Préstamo Recibido (Por devolver)';
-              amountClass = 'tx-amt-internal';
-              prefix = '⏳ ';
-            } else if (tx.type === 'loan_repaid') {
-              icon = '📤✅';
-              title = 'Devolución de Préstamo Pagada';
-              amountClass = 'tx-amt-internal';
-              prefix = '⇄ ';
-            } else if (tx.type === 'loan_given') {
-              icon = '🤝📤';
-              title = 'Por Cobrar (Nos deben devolver)';
-              amountClass = 'tx-amt-internal';
-              prefix = '🤝 ';
-            } else if (tx.type === 'loan_collected') {
-              icon = '🤝💵';
-              title = 'Préstamo / Vaca Cobrada';
-              amountClass = 'tx-amt-internal';
-              prefix = '⇄ ';
-            } else if (tx.type === 'savings_withdrawal') {
-              icon = '🚨🏦';
-              title = 'Rescate desde Ahorros';
-              amountClass = 'tx-amt-internal';
-              prefix = '⚠️ ';
-            }
-
-            return `
-              <div class="tx-row">
-                <div class="tx-left" data-action="open-edit-tx" data-id="${tx.id}" title="Toca para editar este movimiento">
-                  <div class="tx-icon-circle">${icon}</div>
-                  <div class="tx-info">
-                    <div class="tx-title-line">
-                      <strong>${title}</strong>
-                      ${tx.receiptGroupId ? `<span class="badge-split">✂️ Dividida</span>` : ''}
-                      ${tx.fixedTemplateId ? `<span class="badge-fixed">🏠 Fijo</span>` : ''}
-                      ${tx.reconciled ? `<span class="badge-reconciled">✅ Banco OK</span>` : ''}
-                    </div>
-                    <div class="tx-note-line">${tx.note || 'Sin nota adicional'}</div>
-                    <div class="tx-meta-line">
-                      <span>📅 ${tx.date}</span>
-                      <span>•</span>
-                      <span>${pm ? `${pm.icon} ${pm.shortName}` : tx.paymentMethod}</span>
-                      <span>•</span>
-                      <span>${tx.author === 'ella' ? '👩🏻 Marie' : '🧔‍♂️ Mauricio'}</span>
-                    </div>
-                  </div>
-                </div>
-                <div class="tx-right">
-                  <div class="tx-amount ${amountClass}">${prefix}${formatCLP(tx.amount)}</div>
-                  <button type="button" class="btn-edit-tx" data-action="open-edit-tx" data-id="${tx.id}" title="Editar">
-                    ✏️
-                  </button>
-                  <button type="button" class="btn-delete-tx" data-action="delete-tx" data-id="${tx.id}" title="Eliminar">
-                    🗑️
-                  </button>
-                </div>
-              </div>
-            `;
-          }).join('')}
+        <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px;">
+          <span style="font-size:0.72rem;font-weight:700;color:var(--text-muted);margin-right:2px;">Cuenta:</span>
+          <button type="button" class="chip-btn" style="${txFilterState.paymentMethod === 'all' ? 'background:var(--primary-accent);color:#fff;border-color:var(--primary-accent);' : ''}" data-action="set-tx-filter-pm" data-pm="all">Todos</button>
+          <button type="button" class="chip-btn" style="${txFilterState.paymentMethod === 'cmr_falabella' ? 'background:var(--primary-accent);color:#fff;border-color:var(--primary-accent);' : ''}" data-action="set-tx-filter-pm" data-pm="cmr_falabella">🟢 CMR</button>
+          <button type="button" class="chip-btn" style="${txFilterState.paymentMethod === 'bch_all' ? 'background:var(--primary-accent);color:#fff;border-color:var(--primary-accent);' : ''}" data-action="set-tx-filter-pm" data-pm="bch_all">🏦 B. Chile</button>
+          <button type="button" class="chip-btn" style="${txFilterState.paymentMethod === 'cuenta_mujer' ? 'background:var(--primary-accent);color:#fff;border-color:var(--primary-accent);' : ''}" data-action="set-tx-filter-pm" data-pm="cuenta_mujer">👩🏻 Cta. Mujer</button>
+          <button type="button" class="chip-btn" style="${txFilterState.paymentMethod === 'efectivo' ? 'background:var(--primary-accent);color:#fff;border-color:var(--primary-accent);' : ''}" data-action="set-tx-filter-pm" data-pm="efectivo">💵 Efectivo</button>
         </div>
-      `}
+
+        <div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;align-items:center;">
+          <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+            <span style="font-size:0.72rem;font-weight:700;color:var(--text-muted);margin-right:2px;">Autor:</span>
+            <button type="button" class="chip-btn" style="${txFilterState.author === 'all' ? 'background:var(--primary-accent);color:#fff;border-color:var(--primary-accent);' : ''}" data-action="set-tx-filter-author" data-author="all">Ambos</button>
+            <button type="button" class="chip-btn" style="${txFilterState.author === 'el' ? 'background:var(--primary-accent);color:#fff;border-color:var(--primary-accent);' : ''}" data-action="set-tx-filter-author" data-author="el">🧔‍♂️ Mauricio</button>
+            <button type="button" class="chip-btn" style="${txFilterState.author === 'ella' ? 'background:var(--primary-accent);color:#fff;border-color:var(--primary-accent);' : ''}" data-action="set-tx-filter-author" data-author="ella">👩🏻 Marie</button>
+          </div>
+
+          <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+            <span style="font-size:0.72rem;font-weight:700;color:var(--text-muted);margin-right:2px;">Estado:</span>
+            <button type="button" class="chip-btn" style="${txFilterState.reconciledStatus === 'all' ? 'background:var(--primary-accent);color:#fff;border-color:var(--primary-accent);' : ''}" data-action="set-tx-filter-rec" data-rec="all">Todos</button>
+            <button type="button" class="chip-btn" style="${txFilterState.reconciledStatus === 'pending' ? 'background:var(--primary-accent);color:#fff;border-color:var(--primary-accent);' : ''}" data-action="set-tx-filter-rec" data-rec="pending">⏳ Pendientes de Conciliar</button>
+          </div>
+        </div>
+
+        <div id="tx-filtered-summary-bar" style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--border-strong);font-size:0.79rem;color:var(--text-secondary);">
+          ${renderFilteredSummaryBarHtml(filteredTxs, monthTxs.length)}
+        </div>
+      </div>
+
+      <div id="tx-filtered-list-container">
+        ${renderTransactionRowsHtml(filteredTxs, monthTxs.length)}
+      </div>
     </section>
   `;
 }
@@ -1210,6 +1436,8 @@ function renderBudgetTab(metrics) {
   const paceDiff = metrics.budgetUsedPct - metrics.monthProgressPct;
 
   return `
+    ${renderBurnRateAndDiagnosisWidget(metrics)}
+
     <section class="kpi-grid">
       <div class="kpi-card kpi-income">
         <span class="kpi-title">💰 Ingresos de ${getMonthNameLabel(activeYearMonth)}</span>
@@ -1694,62 +1922,89 @@ function renderReconcileTab() {
 // PESTAÑA 5: IPHONE WIFI QR, GOOGLE SHEETS (4G/5G), EXCEL & GEMINI IA
 // ============================================================================
 function renderCloudTab() {
-  const iphoneUrl = `http://${detectedLocalIp}:8090`;
-  const qrImgUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(iphoneUrl)}`;
+  const webhookUrl =
+    userPrefs.googleSheetsWebhookUrl || appState.sharedIntegrations?.googleSheetsWebhookUrl || '';
+  const hasCloudConnected = Boolean(webhookUrl && webhookUrl.startsWith('https://script.google.com/'));
+  const marieMagicUrl = buildMagicInstallLink('ella');
+  const localWifiUrl = `http://${detectedLocalIp}:8090`;
+  const qrImgUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(marieMagicUrl)}`;
 
   return `
     <section class="card-panel" style="margin-bottom:16px;border:2px solid var(--primary-accent);">
       <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:18px;">
-        <div style="flex:1;min-width:250px;">
-          <h2 class="section-title">📱 Instalar en los iPhones de Mauricio y Marie (Sincronización WiFi + 4G)</h2>
+        <div style="flex:1;min-width:260px;">
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px;">
+            <h2 class="section-title" style="margin:0;">🌍 Modo Online iPhone: Santiago ↔ Algarrobo</h2>
+            <span class="rec-status-pill ${hasCloudConnected ? 'pill-matched' : 'pill-internal'}" style="font-size:0.75rem;">
+              ${hasCloudConnected ? '🟢 Nube Conectada en Vivo' : '🟡 Paso 1: Conecta tu Google Sheet abajo'}
+            </span>
+          </div>
           <p class="section-subtitle" style="margin-top:4px;">
-            Ambos iPhones y este Mac fusionan sus movimientos automáticamente sin sobrescribirse jamás:
+            ${
+              hasCloudConnected
+                ? '¡Todo listo! El Link Mágico de abajo ya lleva tu Google Sheets integrado y el perfil de 👩🏻 Marie pre-seleccionado para que ella lo abra en Algarrobo sin configurar nada:'
+                : 'Para que tu iPhone en Santiago y el de Marie en Algarrobo sincronicen solos con 4G/5G/WiFi, primero pega abajo la URL de tu Google Sheet y luego envíale el Link Mágico por WhatsApp:'
+            }
           </p>
           <ol class="setup-steps" style="margin-top:10px;font-size:0.84rem;">
-            <li>Abran la <strong>Cámara del iPhone</strong> y apunten al QR (o entren en Safari a <strong><a href="${iphoneUrl}" target="_blank" style="color:var(--primary-accent);">${iphoneUrl}</a></strong>).</li>
-            <li>En el iPhone de Marie, toquen arriba donde dice <strong>"👩🏻 Marie"</strong>.</li>
-            <li>En Safari toquen <strong>Compartir → "Agregar a inicio"</strong>. Además, cualquier clave de Google Sheets o Gemini que configures en este Mac se comparte sola con el iPhone de Marie.</li>
+            <li>Toca <strong>"💬 Enviar App Lista por WhatsApp a Marie"</strong> abajo.</li>
+            <li>Marie abre ese link en <strong>Safari</strong> en su iPhone en Algarrobo y toca <strong>Compartir → "Agregar a pantalla de inicio"</strong>.</li>
+            <li>¡Listo! Cada vez que tú en Santiago o ella en Algarrobo anoten un gasto, ambos iPhones se actualizan solos en segundos sin pisarse los datos.</li>
           </ol>
+
+          <div class="cloud-actions-row" style="margin-top:14px;display:flex;flex-wrap:wrap;gap:10px;">
+            <button type="button" class="btn-primary" data-action="share-whatsapp-marie" style="background:#16a34a;border-color:#16a34a;">
+              💬 Enviar App Lista por WhatsApp a Marie
+            </button>
+            <button type="button" class="btn-secondary" data-action="copy-marie-link">
+              📋 Copiar Link Mágico de Marie
+            </button>
+            <button type="button" class="btn-secondary" data-action="copy-mauricio-link">
+              🧔‍♂️ Copiar Mi Link (Mauricio)
+            </button>
+          </div>
         </div>
-        <div style="text-align:center;background:#ffffff;padding:12px;border-radius:16px;border:1px solid #cbd5e1;">
-          <img src="${qrImgUrl}" alt="QR iPhone WiFi" width="144" height="144" style="display:block;margin:0 auto 6px;border-radius:8px;" />
-          <strong style="font-size:0.76rem;color:#0f172a;">${iphoneUrl}</strong>
+        <div style="text-align:center;background:#ffffff;padding:12px;border-radius:16px;border:1px solid #cbd5e1;min-width:170px;">
+          <img src="${qrImgUrl}" alt="QR iPhone Online" width="144" height="144" style="display:block;margin:0 auto 6px;border-radius:8px;" />
+          <strong style="font-size:0.74rem;color:#0f172a;display:block;">QR Directo para Marie</strong>
+          <small style="font-size:0.68rem;color:#475569;display:block;margin-top:2px;">WiFi Casa: ${localWifiUrl}</small>
         </div>
       </div>
     </section>
 
     <div class="cloud-grid">
       <section class="card-panel">
-        <h2 class="section-title">☁️ Sincronización fuera de casa (Google Sheets 4G/5G)</h2>
+        <h2 class="section-title">☁️ Motor en la Nube (Google Sheets 4G/5G Automático)</h2>
         <p class="section-subtitle">
-          Activa una hoja en tu Google Drive para sincronizar incluso cuando estén en el supermercado con datos móviles.
+          Sincroniza automáticamente cada 10 segundos entre Santiago y Algarrobo y respalda todo en tu Google Drive.
         </p>
 
         <div class="input-group mt-sm">
-          <label>URL de tu Web App de Google Apps Script (Se comparte automáticamente con Marie)</label>
+          <label>URL de tu Web App de Google Apps Script (Se incluye sola en el Link Mágico de Marie)</label>
           <input
             type="url"
             id="gsheets-url-input"
             class="text-input"
             placeholder="https://script.google.com/macros/s/.../exec"
-            value="${userPrefs.googleSheetsWebhookUrl || appState.sharedIntegrations?.googleSheetsWebhookUrl || ''}"
+            value="${webhookUrl}"
           />
         </div>
 
         <div class="cloud-actions-row">
           <button type="button" class="btn-primary" data-action="save-and-sync-up">
-            ☁️ Guardar y Sincronizar con Google Sheets
+            ☁️ Guardar y Activar Sincronización Online
           </button>
           <button type="button" class="btn-secondary" data-action="sync-down-sheets">
-            🔄 Fusionar desde Google Sheets
+            🔄 Fusionar Ahora
           </button>
         </div>
 
         <div class="setup-guide-box">
-          <h4>📋 Actívalo gratis en 90 segundos:</h4>
+          <h4>📋 Actívalo gratis en 90 segundos (solo 1 vez):</h4>
           <ol class="setup-steps">
             <li>Crea una hoja en <a href="https://sheets.new" target="_blank" rel="noopener" style="color:var(--primary-accent);">sheets.new</a> y entra a <strong>Extensiones → Apps Script</strong>.</li>
             <li>Copia el código con el botón de abajo, pégalo en Apps Script y dale a <strong>Implementar → Nueva implementación → Aplicación web (Acceso: Cualquier persona)</strong>.</li>
+            <li>Pega la URL generada arriba, toca <strong>Guardar</strong> y mándale el botón verde de WhatsApp a Marie.</li>
           </ol>
           <button type="button" class="btn-secondary-sm" data-action="copy-apps-script-code">
             📋 Copiar Código Google Apps Script (Con Fusión Anticolisión)
@@ -1900,7 +2155,9 @@ function attachDynamicInputListeners() {
         if (myShare > 0) {
           appState.transactions.push({
             id: `tx_${Date.now()}_own`,
+            splitGroupId: groupId,
             receiptGroupId: groupId,
+            splitTotalAmount: amountNum,
             date: baseDate,
             type: 'expense',
             amount: myShare,
@@ -1916,7 +2173,9 @@ function attachDynamicInputListeners() {
         if (owedBack > 0) {
           appState.transactions.push({
             id: `tx_${Date.now()}_owed`,
+            splitGroupId: groupId,
             receiptGroupId: groupId,
+            splitTotalAmount: amountNum,
             date: baseDate,
             type: 'loan_given',
             amount: owedBack,
@@ -2256,6 +2515,23 @@ function attachDynamicInputListeners() {
       }
     };
   });
+
+  // Buscador instantáneo del historial de movimientos (sin desmontar el input ni cerrar teclado iPhone)
+  const txSearchInput = document.getElementById('tx-search-input');
+  if (txSearchInput) {
+    txSearchInput.oninput = (e) => {
+      txFilterState.searchQuery = e.target.value;
+      updateFilteredTransactionsDOM();
+    };
+  }
+
+  const txFilterCat = document.getElementById('tx-filter-category');
+  if (txFilterCat) {
+    txFilterCat.onchange = (e) => {
+      txFilterState.categoryId = e.target.value || 'all';
+      renderApp();
+    };
+  }
 }
 
 // ============================================================================
@@ -2269,6 +2545,90 @@ document.addEventListener('click', async (e) => {
 
   if (action === 'switch-tab') {
     activeTab = btn.dataset.tab;
+    renderApp();
+    return;
+  }
+
+  if (action === 'toggle-family-diagnosis') {
+    diagnosisState.isOpen = !diagnosisState.isOpen;
+    diagnosisState.aiError = '';
+    renderApp();
+    return;
+  }
+
+  if (action === 'run-ai-family-diagnosis') {
+    const apiKey = userPrefs.geminiApiKey || appState.sharedIntegrations?.geminiApiKey || '';
+    if (!apiKey.trim()) {
+      diagnosisState.aiError =
+        'Para consultar a Gemini 3.8 Flash en vivo, guarda tu clave gratuita en la pestaña "☁️ iPhone & IA". Mientras tanto, estás viendo el Diagnóstico Instantáneo 0 ms.';
+      renderApp();
+      return;
+    }
+    try {
+      diagnosisState.isLoadingAI = true;
+      diagnosisState.aiError = '';
+      renderApp();
+
+      const metrics = getMonthMetrics(activeYearMonth);
+      const auditInput = {
+        activeYearMonth,
+        income: metrics.effectiveIncome,
+        savingsGoal: metrics.savingsGoal,
+        totalExpenses: metrics.totalExpense,
+        availableReal: metrics.remainingSpendable,
+        cmrSpent: metrics.cmrSpent,
+        cmrPaid: metrics.cmrPaid,
+        cmrReserveNeeded: metrics.cmrPendingReserve,
+        wifeTransferred: metrics.transferredToWife,
+        wifeSpent: metrics.spentFromWifeAccount,
+        wifeBalance: metrics.wifeWalletRemaining,
+        categoriesBreakdown: metrics.categoryBreakdown,
+        pendingLoansSummary: {
+          owedByUs: metrics.totalLoansOwedToOthers,
+          owedToUs: metrics.totalLoansReceivable,
+          people: metrics.loansByPerson
+        },
+        unpaidFixedCount: (metrics.pendingFixedExpenses || []).length,
+        daysRemaining: metrics.daysRemaining
+      };
+
+      const aiResult = await generateMonthlyFamilyAuditWithGemini(auditInput, apiKey);
+      diagnosisState.aiAuditResult = aiResult;
+      diagnosisState.aiAuditMonth = activeYearMonth;
+      diagnosisState.isLoadingAI = false;
+      showToast('✨ Diagnóstico enriquecido con Gemini 3.8 Flash', 'success');
+    } catch (err) {
+      diagnosisState.isLoadingAI = false;
+      diagnosisState.aiError = err.message || 'No se pudo conectar con Gemini IA.';
+    }
+    renderApp();
+    return;
+  }
+
+  if (action === 'set-tx-filter-pm') {
+    txFilterState.paymentMethod = btn.dataset.pm || 'all';
+    renderApp();
+    return;
+  }
+
+  if (action === 'set-tx-filter-author') {
+    txFilterState.author = btn.dataset.author || 'all';
+    renderApp();
+    return;
+  }
+
+  if (action === 'set-tx-filter-rec') {
+    txFilterState.reconciledStatus = btn.dataset.rec || 'all';
+    renderApp();
+    return;
+  }
+
+  if (action === 'clear-tx-filters') {
+    txFilterState.searchQuery = '';
+    txFilterState.paymentMethod = 'all';
+    txFilterState.author = 'all';
+    txFilterState.reconciledStatus = 'all';
+    txFilterState.categoryId = 'all';
     renderApp();
     return;
   }
@@ -2906,8 +3266,91 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
+  if (action === 'header-sync-click') {
+    const url =
+      userPrefs.googleSheetsWebhookUrl || appState.sharedIntegrations?.googleSheetsWebhookUrl || '';
+    if (!url) {
+      activeTab = 'cloud';
+      renderApp();
+      showToast('☁️ Conecta aquí tu Google Sheet y envíale el link por WhatsApp a Marie', 'success');
+      return;
+    }
+    try {
+      showToast('🔄 Sincronizando en vivo (Santiago ↔ Algarrobo)...', 'success');
+      const res = await syncFromCloudGoogleSheets(appState);
+      if (res && res.state) {
+        appState = res.state;
+        renderApp();
+      }
+      showToast('✅ ¡Sincronizado al día con Marie!', 'success');
+    } catch (err) {
+      showToast(`Error al sincronizar: ${err.message}`, 'error');
+    }
+    return;
+  }
+
+  if (action === 'share-whatsapp-marie') {
+    const rawInputUrl = extractWebhookUrl(document.getElementById('gsheets-url-input')?.value);
+    if (rawInputUrl && rawInputUrl.startsWith('https://script.google.com/')) {
+      userPrefs.googleSheetsWebhookUrl = rawInputUrl;
+      saveUserPrefs(userPrefs);
+      if (!appState.sharedIntegrations) appState.sharedIntegrations = {};
+      appState.sharedIntegrations.googleSheetsWebhookUrl = rawInputUrl;
+      saveState(appState, { skipCloudSync: true });
+    }
+    const marieLink = buildMagicInstallLink('ella');
+    const hasCloud = Boolean(
+      userPrefs.googleSheetsWebhookUrl || appState.sharedIntegrations?.googleSheetsWebhookUrl
+    );
+    const msg = [
+      '🛡️ *App Finanzas Familiar (Lista para tu iPhone)*',
+      '',
+      'Amor, abre este link en *Safari* en tu iPhone:',
+      marieLink,
+      '',
+      '📲 *Para dejarla como App en tu iPhone:*',
+      '1. Ábrelo en Safari',
+      '2. Toca el botón *Compartir* (abajo al centro) y elige *"Agregar a inicio"*',
+      hasCloud
+        ? '✨ Ya viene lista con tu nombre (👩🏻 Marie) y conectada en vivo conmigo entre Santiago y Algarrobo.'
+        : '✨ Ya viene lista con tu nombre (👩🏻 Marie).'
+    ].join('\n');
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
+    return;
+  }
+
+  if (action === 'copy-marie-link') {
+    const rawInputUrl = extractWebhookUrl(document.getElementById('gsheets-url-input')?.value);
+    if (rawInputUrl && rawInputUrl.startsWith('https://script.google.com/')) {
+      userPrefs.googleSheetsWebhookUrl = rawInputUrl;
+      saveUserPrefs(userPrefs);
+      if (!appState.sharedIntegrations) appState.sharedIntegrations = {};
+      appState.sharedIntegrations.googleSheetsWebhookUrl = rawInputUrl;
+      saveState(appState, { skipCloudSync: true });
+    }
+    const marieLink = buildMagicInstallLink('ella');
+    try {
+      await navigator.clipboard.writeText(marieLink);
+      showToast('📋 Link Mágico de Marie copiado al portapapeles', 'success');
+    } catch {
+      prompt('Copia este Link Mágico para Marie:', marieLink);
+    }
+    return;
+  }
+
+  if (action === 'copy-mauricio-link') {
+    const mauricioLink = buildMagicInstallLink('el');
+    try {
+      await navigator.clipboard.writeText(mauricioLink);
+      showToast('📋 Tu Link Mágico (Mauricio) copiado para abrirlo en tu iPhone', 'success');
+    } catch {
+      prompt('Copia tu Link Mágico (Mauricio):', mauricioLink);
+    }
+    return;
+  }
+
   if (action === 'save-and-sync-up') {
-    const url = document.getElementById('gsheets-url-input')?.value?.trim() || '';
+    const url = extractWebhookUrl(document.getElementById('gsheets-url-input')?.value);
     userPrefs.googleSheetsWebhookUrl = url;
     saveUserPrefs(userPrefs);
     if (!appState.sharedIntegrations) appState.sharedIntegrations = {};
@@ -2916,12 +3359,14 @@ document.addEventListener('click', async (e) => {
 
     if (!url) {
       showToast('URL vaciada. Operando en modo WiFi / local.', 'success');
+      renderApp();
       return;
     }
     try {
       showToast('☁️ Sincronizando con Google Sheets...', 'success');
       await pushStateToGoogleSheets(appState, url);
-      showToast('✅ ¡Sincronizado con Google Sheets y compartido con Marie!', 'success');
+      appState = loadState();
+      showToast('✅ ¡Nube conectada! Ahora envíale el Link Mágico por WhatsApp a Marie', 'success');
       renderApp();
     } catch (err) {
       showToast(`Error al sincronizar: ${err.message}`, 'error');
@@ -2931,7 +3376,7 @@ document.addEventListener('click', async (e) => {
 
   if (action === 'sync-down-sheets') {
     const url =
-      document.getElementById('gsheets-url-input')?.value?.trim() ||
+      extractWebhookUrl(document.getElementById('gsheets-url-input')?.value) ||
       userPrefs.googleSheetsWebhookUrl ||
       appState.sharedIntegrations?.googleSheetsWebhookUrl;
     if (!url) {
@@ -2961,6 +3406,7 @@ document.addEventListener('click', async (e) => {
     appState.sharedIntegrations.geminiApiKey = key;
     saveState(appState);
     showToast('🔑 Clave Gemini guardada y sincronizada en tus dispositivos familiares', 'success');
+    renderApp();
     return;
   }
 
@@ -2986,34 +3432,59 @@ document.addEventListener('focusout', () => {
   }, 150);
 });
 
-// Inicializar y activar sincronización inteligente sin interrumpir el teclado del iPhone
-window.addEventListener('DOMContentLoaded', async () => {
-  applyTheme(userPrefs.theme);
-  renderApp();
-  const synced = await syncFromLocalWifiServer(appState);
-  if (synced) {
-    if (synced.localIp) detectedLocalIp = synced.localIp;
-    appState = synced.state;
-    if (!isUserTyping()) {
-      renderApp();
-    } else {
-      pendingSyncRender = true;
-    }
-  }
+let isSyncingInBackground = false;
+async function runBackgroundSync(forceRenderOnFirstLoad = false) {
+  if (isSyncingInBackground) return;
+  isSyncingInBackground = true;
+  try {
+    let anyChanged = false;
 
-  setInterval(async () => {
-    if (document.hidden) return;
-    const latest = await syncFromLocalWifiServer(appState);
-    if (latest) {
-      if (latest.localIp) detectedLocalIp = latest.localIp;
-      if (latest.changed) {
-        appState = latest.state;
-        if (!isUserTyping()) {
-          renderApp();
-        } else {
-          pendingSyncRender = true;
-        }
+    const wifiSynced = await syncFromLocalWifiServer(appState);
+    if (wifiSynced) {
+      if (wifiSynced.localIp) detectedLocalIp = wifiSynced.localIp;
+      if (wifiSynced.changed || forceRenderOnFirstLoad) {
+        appState = wifiSynced.state;
+        anyChanged = true;
       }
     }
-  }, 8000);
+
+    const cloudSynced = await syncFromCloudGoogleSheets(appState);
+    if (cloudSynced) {
+      if (cloudSynced.changed || forceRenderOnFirstLoad) {
+        appState = cloudSynced.state;
+        anyChanged = true;
+      }
+    }
+
+    if (anyChanged) {
+      userPrefs = loadUserPrefs();
+      if (!isUserTyping()) {
+        renderApp();
+      } else {
+        pendingSyncRender = true;
+      }
+    }
+  } finally {
+    isSyncingInBackground = false;
+  }
+}
+
+// Inicializar y activar sincronización inteligente (WiFi local + Google Sheets 4G/5G entre ciudades)
+window.addEventListener('DOMContentLoaded', async () => {
+  applyTheme(userPrefs.theme);
+  quickForm.paymentMethod = userPrefs.defaultPaymentMethod || 'cmr_falabella';
+  renderApp();
+  await runBackgroundSync(true);
+
+  setInterval(() => {
+    if (document.hidden) return;
+    runBackgroundSync(false);
+  }, 10000);
+});
+
+// Al desbloquear el iPhone o volver a abrir la App desde la pantalla de inicio, sincronizar al instante
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    runBackgroundSync(false);
+  }
 });
