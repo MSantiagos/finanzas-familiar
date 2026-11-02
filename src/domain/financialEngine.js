@@ -17,6 +17,8 @@ const FALLBACK_CATEGORIES = [
   { id: 'imprevistos', name: 'Imprevistos y Otros', icon: '🚨', group: 'esencial', defaultBudget: 50000 }
 ];
 
+export const DEFAULT_CATEGORIES = FALLBACK_CATEGORIES;
+
 const PAYMENT_METHOD_LABELS = {
   bch_ctacte: 'Banco de Chile Cta. Cte. Corriente',
   bch_vista: 'Banco de Chile Cta. Vista FAN',
@@ -904,13 +906,14 @@ export function generateInstantFamilyDiagnosis(summary = {}, burnRate = null, lo
     }
   };
 
-  // 4. Diagnóstico Cuenta Mujer (Marie)
+  // 4. Diagnóstico Fondo Familiar en Cuenta de Marie (tono cálido de equipo)
   const wifeMessage =
     wifeRemainingBalance >= 0
-      ? `Marie tiene ${formatCLPAmount(wifeRemainingBalance)} disponibles de fondos transferidos (${formatCLPAmount(transferredToWife)} transferidos este mes vs ${formatCLPAmount(spentByWife)} gastados).`
-      : `Marie ha registrado ${formatCLPAmount(Math.abs(wifeRemainingBalance))} por encima de lo transferido; considera hacerle un traspaso interno o cuadrar cartola.`;
+      ? `Fondo Familiar en Cuenta de Marie: cuenta con ${formatCLPAmount(wifeRemainingBalance)} disponibles para compras del hogar (${formatCLPAmount(transferredToWife)} recargados este mes vs ${formatCLPAmount(spentByWife)} utilizados en equipo).`
+      : `Fondo Familiar en Cuenta de Marie: ha cubierto ${formatCLPAmount(Math.abs(wifeRemainingBalance))} adicionales con su cuenta; ¡buen momento para hacerle una recarga de apoyo! ❤️`;
 
   const wifeAccountDiagnosis = {
+    title: 'Fondo Familiar en Cuenta de Marie',
     status: wifeRemainingBalance >= 0 ? 'positive' : 'needs_topup',
     remainingBalance: wifeRemainingBalance,
     transferredToWife,
@@ -980,7 +983,7 @@ export function generateInstantFamilyDiagnosis(summary = {}, burnRate = null, lo
 
   if (wifeRemainingBalance < 25000 && top3Actions.length < 3) {
     top3Actions.push(
-      `👩🏻 Cuenta Marie: Su saldo disponible es ${formatCLPAmount(wifeRemainingBalance)}. Coordinar si requiere nuevo traspaso interno familiar.`
+      `💑 Fondo Familiar en Cuenta de Marie: Quedan ${formatCLPAmount(wifeRemainingBalance)} disponibles. Coordinar en equipo si necesita una recarga para la semana.`
     );
   }
 
@@ -1014,5 +1017,644 @@ export function generateInstantFamilyDiagnosis(summary = {}, burnRate = null, lo
     categoryAlerts,
     top3Actions: top3Actions.slice(0, 3),
     generatedAt: new Date().toISOString()
+  };
+}
+
+// ============================================================================
+// DETECTOR DE GASTOS HORMIGA Y SUSCRIPCIONES / COBROS DUPLICADOS
+// ============================================================================
+
+const DIGITAL_SUBSCRIPTION_CATALOG = [
+  { key: 'netflix', name: 'Netflix', keywords: ['netflix'] },
+  { key: 'spotify', name: 'Spotify', keywords: ['spotify'] },
+  { key: 'disney', name: 'Disney+', keywords: ['disney+', 'disney plus', 'disneyplus', 'disney'] },
+  { key: 'apple', name: 'Apple / iCloud', keywords: ['apple.com/bill', 'apple.com', 'icloud', 'itunes'] },
+  { key: 'youtube', name: 'YouTube Premium', keywords: ['youtube'] },
+  { key: 'google', name: 'Google', keywords: ['google one', 'google play', 'google cloud', 'google storage', 'google'] },
+  { key: 'max', name: 'Max (HBO)', keywords: ['hbomax', 'hbo max', 'hbo', 'max.com'] },
+  { key: 'amazon_prime', name: 'Amazon Prime', keywords: ['amazon prime', 'prime video', 'primevideo'] },
+  { key: 'chatgpt', name: 'ChatGPT / OpenAI', keywords: ['chatgpt', 'openai'] },
+  { key: 'claude', name: 'Claude AI', keywords: ['claude', 'anthropic'] },
+  { key: 'playstation', name: 'PlayStation', keywords: ['playstation', 'psn'] },
+  { key: 'xbox', name: 'Xbox', keywords: ['xbox', 'game pass', 'gamepass'] },
+  { key: 'nintendo', name: 'Nintendo', keywords: ['nintendo'] },
+  { key: 'steam', name: 'Steam', keywords: ['steamgames', 'steam'] },
+  { key: 'patreon', name: 'Patreon', keywords: ['patreon'] },
+  { key: 'canva', name: 'Canva', keywords: ['canva'] },
+  { key: 'microsoft', name: 'Microsoft 365', keywords: ['microsoft', 'office 365', 'onedrive'] }
+];
+
+const ANT_BRAND_CATALOG = [
+  { key: 'starbucks', name: 'Starbucks', keywords: ['starbucks'] },
+  { key: 'juan_valdez', name: 'Juan Valdez', keywords: ['juan valdez'] },
+  { key: 'dunkin', name: "Dunkin'", keywords: ['dunkin'] },
+  { key: 'castano', name: 'Castaño', keywords: ['castano'] },
+  { key: 'oxxo', name: 'Oxxo', keywords: ['oxxo'] },
+  { key: 'ok_market', name: 'OK Market', keywords: ['ok market', 'okmarket'] },
+  { key: 'spacio1', name: 'Spacio1', keywords: ['spacio1', 'spacio 1'] },
+  { key: 'pronto_copec', name: 'Pronto Copec', keywords: ['pronto copec', 'pronto'] },
+  { key: 'pedidosya', name: 'PedidosYa', keywords: ['pedidosya', 'pedidos ya'] },
+  { key: 'uber_eats', name: 'Uber Eats', keywords: ['uber eats', 'ubereats'] },
+  { key: 'rappi', name: 'Rappi', keywords: ['rappi'] },
+  { key: 'uber', name: 'Uber', keywords: ['uber'] },
+  { key: 'cabify', name: 'Cabify', keywords: ['cabify'] },
+  { key: 'didi', name: 'DiDi', keywords: ['didi'] },
+  { key: 'mcdonalds', name: "McDonald's", keywords: ['mcdonalds', 'mc donalds'] },
+  { key: 'burger_king', name: 'Burger King', keywords: ['burger king'] },
+  { key: 'kfc', name: 'KFC', keywords: ['kfc'] }
+];
+
+const ANT_EXPENSE_KEYWORDS = [
+  'cafe',
+  'cafeteria',
+  'starbucks',
+  'juan valdez',
+  'marley',
+  'dunkin',
+  'castano',
+  'san camilo',
+  'panaderia',
+  'pasteleria',
+  'helado',
+  'heladeria',
+  'snack',
+  'dulce',
+  'chocolate',
+  'golosina',
+  'bebida',
+  'cerveza',
+  'minimarket',
+  'oxxo',
+  'ok market',
+  'okmarket',
+  'spacio1',
+  'spacio 1',
+  'pronto',
+  'upa',
+  'kiosco',
+  'almacen',
+  'botilleria',
+  'delivery',
+  'pedidosya',
+  'pedidos ya',
+  'uber eats',
+  'ubereats',
+  'rappi',
+  'uber',
+  'cabify',
+  'didi',
+  'taxi',
+  'scooter',
+  'mcdonalds',
+  'mc donalds',
+  'burger',
+  'kfc',
+  'wendys',
+  'taco bell',
+  'pizza',
+  'sushi',
+  'completo',
+  'empanada',
+  'sandwich',
+  'propina',
+  'estacionamiento',
+  'parquimetro'
+];
+
+function matchSubscriptionService(tx) {
+  const rawLabel = `${tx?.merchant || ''} ${tx?.note || ''} ${tx?.description || ''} ${tx?.fixedTemplateId || ''}`;
+  const norm = normalizeSearchText(rawLabel);
+  if (!norm) return null;
+
+  for (const service of DIGITAL_SUBSCRIPTION_CATALOG) {
+    for (const kw of service.keywords) {
+      if (norm.includes(kw)) {
+        return { key: service.key, name: service.name };
+      }
+    }
+  }
+
+  // Coincidencia de palabra exacta para "max" (ej. "Suscripción Max", "Max") sin confundir con "maximo"
+  if (/\bmax\b/.test(norm)) {
+    return { key: 'max', name: 'Max (HBO)' };
+  }
+
+  // Plantillas fijas de suscripciones o notas explícitas de suscripción/membresía
+  if (
+    tx?.isSubscription === true ||
+    norm.includes('suscripcion') ||
+    norm.includes('membresia') ||
+    String(tx?.fixedTemplateId || '').toLowerCase().includes('sub')
+  ) {
+    const cleanName = extractMerchantDisplayName(tx?.merchant || tx?.note || tx?.description || 'Suscripción');
+    const cleanKey = normalizeSearchText(cleanName) || 'suscripcion';
+    return { key: cleanKey, name: cleanName };
+  }
+
+  return null;
+}
+
+function extractMerchantDisplayName(rawText) {
+  let cleaned = String(rawText || 'Comercio menor')
+    .replace(/^(compra en:|compra:|cargo:|pago:|tef a:)\s*/i, '')
+    .trim();
+
+  const parts = cleaned.split(/\s*[—\-:]\s*/);
+  if (parts[0] && parts[0].trim().length >= 2) {
+    cleaned = parts[0].trim();
+  }
+  if (!cleaned) return 'Comercio menor';
+
+  return cleaned
+    .toLowerCase()
+    .split(/\s+/)
+    .slice(0, 4)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+function normalizeAntMerchant(tx) {
+  const rawText = tx?.merchant || tx?.note || tx?.description || 'Comercio menor';
+  const norm = normalizeSearchText(rawText);
+
+  for (const brand of ANT_BRAND_CATALOG) {
+    for (const kw of brand.keywords) {
+      if (norm.includes(kw)) {
+        return { key: brand.key, name: brand.name };
+      }
+    }
+  }
+
+  const displayName = extractMerchantDisplayName(rawText);
+  const key = normalizeSearchText(displayName).replace(/[^a-z0-9\s]/g, '').trim() || 'comercio menor';
+  return { key, name: displayName };
+}
+
+/**
+ * Analiza las transacciones de gasto (`type === 'expense'`) del mes `activeYearMonth` para detectar:
+ * 1. Gastos Hormiga (`antExpenses`): micro-compras (`<= $15.000`) en categorías u orígenes propensos
+ *    a fuga silenciosa (`delivery_salidas`, `gustos_personales`, snacks, cafés, minimarkets, apps de
+ *    transporte, o cualquier micro-compra repetida `<= $12.000`).
+ * 2. Suscripciones Digitales y Cobros Recurrentes (`subscriptions`), incluyendo alertas de cobros
+ *    duplicados en el mismo mes (`duplicateAlerts`).
+ *
+ * @param {Array|Object} transactions - Arreglo de transacciones (o estado con `transactions`).
+ * @param {string} [activeYearMonth] - Mes a analizar en formato "YYYY-MM".
+ */
+export function detectAntExpensesAndSubscriptions(transactions = [], activeYearMonth = '') {
+  const rawTxs = Array.isArray(transactions)
+    ? transactions
+    : Array.isArray(transactions?.transactions)
+      ? transactions.transactions
+      : [];
+
+  const ym = typeof activeYearMonth === 'string' && /^\d{4}-\d{2}$/.test(activeYearMonth)
+    ? activeYearMonth
+    : '';
+
+  const expenseTxs = rawTxs.filter((tx) => {
+    if (!tx || tx.type !== 'expense') return false;
+    const amt = Math.round(Number(tx.amount || 0));
+    if (amt <= 0) return false;
+    if (ym && !String(tx.date || '').startsWith(ym)) return false;
+    return true;
+  });
+
+  const totalMonthSpend = expenseTxs.reduce((acc, tx) => acc + Math.round(Number(tx.amount || 0)), 0);
+
+  // Pre-contabilizar comercios para identificar micro-compras repetidas <= $12.000
+  const microRepeatCounts = {};
+  for (const tx of expenseTxs) {
+    const amt = Math.round(Number(tx.amount || 0));
+    if (amt > 0 && amt <= 12000 && !matchSubscriptionService(tx)) {
+      const { key } = normalizeAntMerchant(tx);
+      microRepeatCounts[key] = (microRepeatCounts[key] || 0) + 1;
+    }
+  }
+
+  const antItems = [];
+  const antByMerchant = {};
+
+  const subscriptionItems = [];
+  const subscriptionsByService = {};
+
+  for (const tx of expenseTxs) {
+    const amt = Math.round(Number(tx.amount || 0));
+    const subMatch = matchSubscriptionService(tx);
+
+    if (subMatch) {
+      const subItem = {
+        ...tx,
+        amount: amt,
+        serviceKey: subMatch.key,
+        name: subMatch.name,
+        merchant: subMatch.name
+      };
+      subscriptionItems.push(subItem);
+
+      if (!subscriptionsByService[subMatch.key]) {
+        subscriptionsByService[subMatch.key] = {
+          key: subMatch.key,
+          merchantKey: subMatch.key,
+          name: subMatch.name,
+          merchant: subMatch.name,
+          count: 0,
+          totalAmount: 0,
+          items: []
+        };
+      }
+      subscriptionsByService[subMatch.key].count += 1;
+      subscriptionsByService[subMatch.key].totalAmount += amt;
+      subscriptionsByService[subMatch.key].items.push(subItem);
+      continue;
+    }
+
+    // Evaluar si califica como Gasto Hormiga (<= $15.000)
+    if (amt > 0 && amt <= 15000) {
+      const catId = tx.categoryId || '';
+      const rawTextNorm = normalizeSearchText(`${tx.merchant || ''} ${tx.note || ''} ${tx.description || ''}`);
+      const { key: merchantKey, name: merchantName } = normalizeAntMerchant(tx);
+
+      const isAntCategory = catId === 'delivery_salidas' || catId === 'gustos_personales';
+      const hasAntKeyword = ANT_EXPENSE_KEYWORDS.some((kw) => rawTextNorm.includes(kw));
+      const isRepeatedMicroPurchase = amt <= 12000 && (microRepeatCounts[merchantKey] || 0) >= 2;
+
+      if (isAntCategory || hasAntKeyword || isRepeatedMicroPurchase) {
+        const antItem = {
+          ...tx,
+          amount: amt,
+          merchantKey,
+          merchantName
+        };
+        antItems.push(antItem);
+
+        if (!antByMerchant[merchantKey]) {
+          antByMerchant[merchantKey] = {
+            name: merchantName,
+            count: 0,
+            totalAmount: 0
+          };
+        }
+        antByMerchant[merchantKey].count += 1;
+        antByMerchant[merchantKey].totalAmount += amt;
+      }
+    }
+  }
+
+  const antTotalAmount = antItems.reduce((acc, item) => acc + item.amount, 0);
+  const antAnnualizedProjection = antTotalAmount * 12;
+  const antPercentOfTotalSpend = totalMonthSpend > 0
+    ? Math.round((antTotalAmount / totalMonthSpend) * 100)
+    : 0;
+
+  const topMerchants = Object.values(antByMerchant).sort(
+    (a, b) => b.totalAmount - a.totalAmount || b.count - a.count || a.name.localeCompare(b.name, 'es')
+  );
+
+  const totalMonthlySubscriptions = subscriptionItems.reduce((acc, item) => acc + item.amount, 0);
+  const annualizedSubscriptions = totalMonthlySubscriptions * 12;
+
+  const duplicateAlerts = Object.values(subscriptionsByService)
+    .filter((group) => group.count >= 2)
+    .sort((a, b) => b.totalAmount - a.totalAmount)
+    .map((group) => ({
+      key: group.key,
+      merchantKey: group.key,
+      name: group.name,
+      merchant: group.name,
+      count: group.count,
+      totalAmount: group.totalAmount,
+      items: group.items,
+      message: `Posible cobro duplicado en ${group.name}: se detectaron ${group.count} cargos en el mismo mes por ${formatCLPAmount(group.totalAmount)}.`
+    }));
+
+  return {
+    yearMonth: ym,
+    totalMonthSpend,
+    antExpenses: {
+      count: antItems.length,
+      totalAmount: antTotalAmount,
+      annualizedProjection: antAnnualizedProjection,
+      percentOfTotalSpend: antPercentOfTotalSpend,
+      topMerchants,
+      items: antItems
+    },
+    subscriptions: {
+      count: subscriptionItems.length,
+      totalMonthlySubscriptions,
+      annualizedSubscriptions,
+      items: subscriptionItems,
+      duplicateAlerts
+    }
+  };
+}
+
+// ============================================================================
+// COMPARATIVA HISTÓRICA MULTI-MES Y EVOLUCIÓN POR CATEGORÍAS
+// ============================================================================
+
+function shiftYearMonth(ym, deltaMonths) {
+  const safeYm = typeof ym === 'string' && /^\d{4}-\d{2}$/.test(ym)
+    ? ym
+    : resolveCalendarProgress().activeYearMonth;
+  const [year, month] = safeYm.split('-').map(Number);
+  const totalMonths = year * 12 + (month - 1) + Number(deltaMonths || 0);
+  const targetYear = Math.floor(totalMonths / 12);
+  const targetMonth = ((totalMonths % 12) + 12) % 12 + 1;
+  return `${String(targetYear).padStart(4, '0')}-${String(targetMonth).padStart(2, '0')}`;
+}
+
+/**
+ * Calcula la evolución histórica de los últimos `monthsBack` meses hasta `activeYearMonth`
+ * (ordenados cronológicamente) y la comparativa directa contra el mes inmediatamente anterior (`prevYearMonth`).
+ *
+ * @param {Object} state - Estado completo de la aplicación.
+ * @param {string} activeYearMonth - Mes activo en formato "YYYY-MM".
+ * @param {number} [monthsBack=6] - Cantidad de meses hacia atrás a incluir en la serie histórica.
+ */
+export function calculateMultiMonthComparison(state = {}, activeYearMonth, monthsBack = 6) {
+  const effectiveYm = typeof activeYearMonth === 'string' && /^\d{4}-\d{2}$/.test(activeYearMonth)
+    ? activeYearMonth
+    : resolveCalendarProgress(activeYearMonth).activeYearMonth;
+
+  const safeMonthsBack = Math.max(1, Math.round(Number(monthsBack || 6)));
+  const prevYearMonth = shiftYearMonth(effectiveYm, -1);
+
+  const categories = Array.isArray(state?.categories) && state.categories.length > 0
+    ? state.categories
+    : FALLBACK_CATEGORIES;
+
+  // Construir serie cronológica de los últimos `monthsBack` meses hasta `effectiveYm`
+  const historySeries = [];
+  const summariesByYm = {};
+
+  for (let offset = safeMonthsBack - 1; offset >= 0; offset -= 1) {
+    const ym = shiftYearMonth(effectiveYm, -offset);
+    const summary = calculateMonthlyFinancialSummary(state, ym);
+    summariesByYm[ym] = summary;
+
+    const hasMonthTxs = summary.txs.length > 0;
+    const hasConfiguredBudget = Boolean(state?.monthlyBudgets?.[ym]);
+    const isCurrentMonth = ym === effectiveYm;
+    const realSaved = hasMonthTxs || isCurrentMonth || hasConfiguredBudget
+      ? summary.effectiveIncome - summary.netExpense - summary.savingsWithdrawnThisMonth
+      : 0;
+
+    historySeries.push({
+      yearMonth: ym,
+      netExpense: summary.netExpense,
+      realIncome: summary.realIncome,
+      effectiveIncome: hasMonthTxs || isCurrentMonth || hasConfiguredBudget ? summary.effectiveIncome : 0,
+      savingsGoal: summary.savingsGoal,
+      realSaved,
+      savingsAchieved: realSaved,
+      cmrSpent: summary.cmrSpent,
+      cmrNetReserve: summary.cmrNetReserve,
+      hasData: hasMonthTxs
+    });
+  }
+
+  const currentSummary = summariesByYm[effectiveYm] || calculateMonthlyFinancialSummary(state, effectiveYm);
+  const prevSummary = summariesByYm[prevYearMonth] || calculateMonthlyFinancialSummary(state, prevYearMonth);
+  const prevHasData = prevSummary.txs.length > 0;
+
+  const currentSavingsAchieved =
+    currentSummary.effectiveIncome - currentSummary.netExpense - currentSummary.savingsWithdrawnThisMonth;
+  const prevSavingsAchieved = prevHasData
+    ? prevSummary.effectiveIncome - prevSummary.netExpense - prevSummary.savingsWithdrawnThisMonth
+    : 0;
+
+  const currentMonth = {
+    yearMonth: effectiveYm,
+    netExpense: currentSummary.netExpense,
+    realIncome: currentSummary.realIncome,
+    effectiveIncome: currentSummary.effectiveIncome,
+    savingsAchieved: currentSavingsAchieved,
+    cmrSpent: currentSummary.cmrSpent
+  };
+
+  const previousMonth = {
+    yearMonth: prevYearMonth,
+    netExpense: prevSummary.netExpense,
+    realIncome: prevSummary.realIncome,
+    effectiveIncome: prevHasData ? prevSummary.effectiveIncome : 0,
+    savingsAchieved: prevSavingsAchieved,
+    cmrSpent: prevSummary.cmrSpent,
+    hasData: prevHasData
+  };
+
+  const deltaExpense = currentMonth.netExpense - previousMonth.netExpense;
+  const deltaExpensePct = previousMonth.netExpense > 0
+    ? Math.round((deltaExpense / previousMonth.netExpense) * 100)
+    : currentMonth.netExpense > 0
+      ? 100
+      : 0;
+
+  const allCategoryIds = new Set([
+    ...categories.map((c) => c.id),
+    ...Object.keys(currentSummary.netSpentByCategory || {}),
+    ...Object.keys(prevSummary.netSpentByCategory || {})
+  ]);
+
+  const categoryDeltas = [];
+  for (const catId of allCategoryIds) {
+    const catMeta = categories.find((c) => c.id === catId) || {
+      id: catId,
+      name: catId,
+      icon: '📌'
+    };
+    const currentSpent = Number(currentSummary.netSpentByCategory?.[catId] || 0);
+    const prevSpent = Number(prevSummary.netSpentByCategory?.[catId] || 0);
+    const deltaAmount = currentSpent - prevSpent;
+    const deltaPct = prevSpent > 0
+      ? Math.round((deltaAmount / prevSpent) * 100)
+      : currentSpent > 0
+        ? 100
+        : 0;
+
+    categoryDeltas.push({
+      categoryId: catId,
+      name: catMeta.name,
+      icon: catMeta.icon || '📌',
+      currentSpent,
+      prevSpent,
+      deltaAmount,
+      deltaPct
+    });
+  }
+
+  // Ordenar por mayor incremento en CLP (y luego por % de incremento)
+  categoryDeltas.sort(
+    (a, b) => b.deltaAmount - a.deltaAmount || b.deltaPct - a.deltaPct || b.currentSpent - a.currentSpent
+  );
+
+  return {
+    currentMonth,
+    previousMonth,
+    deltaExpense,
+    deltaExpensePct,
+    categoryDeltas,
+    historySeries
+  };
+}
+
+// ============================================================================
+// CLONACIÓN DE PRESUPUESTO DEL MES ANTERIOR CON 1 CLIC
+// ============================================================================
+
+/**
+ * Busca el presupuesto mensual configurado más reciente anterior a `targetYearMonth` en
+ * `state.monthlyBudgets` (o construye uno desde `DEFAULT_CATEGORIES` si no existe mes previo)
+ * y lo copia en `state.monthlyBudgets[targetYearMonth]` con `updatedAt: new Date().toISOString()`,
+ * retornando `{ clonedFrom, budgetConfig }`.
+ *
+ * @param {Object} state - Estado completo de la aplicación.
+ * @param {string} targetYearMonth - Mes destino en formato "YYYY-MM".
+ */
+export function clonePreviousMonthBudget(state = {}, targetYearMonth) {
+  const effectiveTargetYm = typeof targetYearMonth === 'string' && /^\d{4}-\d{2}$/.test(targetYearMonth)
+    ? targetYearMonth
+    : resolveCalendarProgress(targetYearMonth).activeYearMonth;
+
+  if (!state.monthlyBudgets || typeof state.monthlyBudgets !== 'object') {
+    state.monthlyBudgets = {};
+  }
+
+  const categories = Array.isArray(state?.categories) && state.categories.length > 0
+    ? state.categories
+    : DEFAULT_CATEGORIES;
+
+  const defaultCategoriesMap = {};
+  for (const cat of categories) {
+    defaultCategoriesMap[cat.id] = Math.max(0, Math.round(Number(cat.defaultBudget || 50000)));
+  }
+
+  const previousConfiguredMonths = Object.keys(state.monthlyBudgets)
+    .filter((ym) => /^\d{4}-\d{2}$/.test(ym) && ym < effectiveTargetYm && state.monthlyBudgets[ym])
+    .sort();
+
+  const latestPrevYm = previousConfiguredMonths.length > 0
+    ? previousConfiguredMonths[previousConfiguredMonths.length - 1]
+    : null;
+
+  const sourceBudget = latestPrevYm ? state.monthlyBudgets[latestPrevYm] : null;
+  const clonedFrom = latestPrevYm || 'DEFAULT_CATEGORIES';
+
+  const budgetConfig = {
+    incomeTarget: Math.max(
+      0,
+      Math.round(Number(sourceBudget?.incomeTarget ?? state?.familyConfig?.monthlyIncomeTarget ?? 2350000))
+    ),
+    savingsGoal: Math.max(
+      0,
+      Math.round(Number(sourceBudget?.savingsGoal ?? state?.familyConfig?.monthlySavingsGoal ?? 250000))
+    ),
+    categories: {
+      ...defaultCategoriesMap,
+      ...(sourceBudget?.categories || {})
+    },
+    clonedFrom,
+    updatedAt: new Date().toISOString()
+  };
+
+  state.monthlyBudgets[effectiveTargetYm] = budgetConfig;
+
+  return {
+    clonedFrom,
+    budgetConfig
+  };
+}
+
+// ============================================================================
+// GENERADOR DE MENSAJES CÁLIDOS DE EQUIPO EN PAREJA (WHATSAPP 1-CLIC)
+// ============================================================================
+
+function createWhatsAppMessageNode(text, label = '') {
+  const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+  const node = {
+    label,
+    text,
+    message: text,
+    url,
+    waUrl: url,
+    toString() {
+      return this.text;
+    }
+  };
+  Object.defineProperty(node, 'includes', {
+    value(searchString, position) {
+      return this.text.includes(searchString, position);
+    },
+    enumerable: false
+  });
+  return node;
+}
+
+/**
+ * Genera mensajes cálidos, empáticos y en tono de equipo de pareja (sin lenguaje frío ni fiscalizador)
+ * con sus URLs `https://wa.me/?text=...` listas para abrir en iPhone:
+ * - `lowWifeWalletRequest`: mensaje de Marie a Mauricio cuando su Fondo Familiar está bajo.
+ * - `transferConfirmationToMarie`: mensaje de Mauricio a Marie al transferirle.
+ * - `weeklyTeamSummary`: resumen ejecutivo de 10 segundos para enviarse por WhatsApp.
+ *
+ * @param {Object} summary - Resumen mensual de `calculateMonthlyFinancialSummary`.
+ * @param {Object} [state={}] - Estado de la aplicación.
+ * @param {string} [activeYearMonth] - Mes activo "YYYY-MM".
+ */
+export function buildCoupleWhatsAppMessages(summary = {}, state = {}, activeYearMonth) {
+  const isSummaryProvided =
+    summary &&
+    typeof summary === 'object' &&
+    ('remainingSpendable' in summary || 'wifeRemainingBalance' in summary || 'savingsGoal' in summary);
+
+  const effectiveYm =
+    activeYearMonth ||
+    summary?.yearMonth ||
+    state?.activeYearMonth ||
+    resolveCalendarProgress().activeYearMonth;
+
+  const effectiveSummary = isSummaryProvided
+    ? summary
+    : calculateMonthlyFinancialSummary(state || summary || {}, effectiveYm);
+
+  const savingsProtected = Math.round(Number(effectiveSummary?.savingsGoal ?? state?.familyConfig?.monthlySavingsGoal ?? 250000));
+  const availableToSpend = Math.round(Number(effectiveSummary?.remainingSpendable ?? 0));
+  const cmrReserve = Math.round(Number(effectiveSummary?.cmrNetReserve ?? effectiveSummary?.cmrPendingReserve ?? 0));
+  const wifeAvailable = Math.round(
+    Number(effectiveSummary?.wifeRemainingBalance ?? effectiveSummary?.wifeWalletRemaining ?? 0)
+  );
+
+  const lowWifeWalletText =
+    `Amor ❤️ me van quedando ${formatCLPAmount(wifeAvailable)} en el Fondo Familiar de mi cuenta, ¿me haces una recarga cuando puedas? 😘`;
+
+  const transferConfirmationText =
+    `Amor ❤️ te acabo de transferir al Fondo Familiar. Ya quedó anotado en nuestra app (tienes ${formatCLPAmount(wifeAvailable)} disponibles en tu cuenta) 🛡️`;
+
+  const weeklyTeamSummaryText =
+    `🛡️ Resumen Familiar (${effectiveYm}):\n` +
+    `• Ahorro del mes: ${formatCLPAmount(savingsProtected)} protegido\n` +
+    `• Disponible para gastar: ${formatCLPAmount(availableToSpend)}\n` +
+    `• Reserva Escudo CMR: ${formatCLPAmount(cmrReserve)}\n` +
+    `• Fondo Familiar Marie: ${formatCLPAmount(wifeAvailable)} disponible\n` +
+    `¡Vamos súper bien equipo! ❤️`;
+
+  const lowWifeWalletRequest = createWhatsAppMessageNode(
+    lowWifeWalletText,
+    'Pedir recarga de Fondo Familiar'
+  );
+  const transferConfirmationToMarie = createWhatsAppMessageNode(
+    transferConfirmationText,
+    'Avisar recarga a Marie'
+  );
+  const weeklyTeamSummary = createWhatsAppMessageNode(
+    weeklyTeamSummaryText,
+    'Compartir Resumen Familiar'
+  );
+
+  return {
+    yearMonth: effectiveYm,
+    lowWifeWalletRequest,
+    transferConfirmationToMarie,
+    weeklyTeamSummary
   };
 }

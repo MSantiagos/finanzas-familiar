@@ -249,7 +249,7 @@ export const CHILE_MERCHANT_RULES = [
     categoryId: 'delivery_salidas',
     keywords: [
       'pedidosya', 'pedidos ya', 'uber eats', 'ubereats', 'rappi', 'justo', 'getjusto',
-      'starbucks', 'juan valdez', 'cafe martinez', 'café martínez', 'tavelli', 'cory', 'marley coffee', 'workcafe',
+      'starbucks', 'juan valdez', 'cafe martinez', 'café martínez', 'pasteleria tavelli', 'tavelli', 'pasteleria cory', 'cory', 'marley coffee', 'workcafe',
       'coppelia', 'bravissimo', 'emporio la rosa', 'grido', 'heladeria', 'heladería', 'gelateria',
       'mcdonalds', "mcdonald's", 'mc donalds', 'arcos dorados', 'burger king', 'wendys', "wendy's", 'kfc', 'kentucky fried',
       'tarragona', 'doggis', 'juan maestro', 'tommy beans', 'mamut', 'pedro juan y diego', "carl's jr", 'carls jr', 'subway', 'streat burger',

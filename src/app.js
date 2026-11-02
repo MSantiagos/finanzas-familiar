@@ -1,7 +1,7 @@
 import {
   PAYMENT_METHODS,
   SAMPLE_BANK_STATEMENT_TEXT
-} from './data/defaults.js?v=10';
+} from './data/defaults.js?v=11';
 import {
   loadState,
   saveState,
@@ -14,7 +14,7 @@ import {
   pullStateFromGoogleSheets,
   syncFromLocalWifiServer,
   syncFromCloudGoogleSheets
-} from './services/storage.js?v=10';
+} from './services/storage.js?v=11';
 import {
   parseBankStatementText,
   reconcileStatementRows,
@@ -22,22 +22,31 @@ import {
   formatLiveCLPInput,
   normalizeContactKey,
   extractContactDisplayName
-} from './services/reconciler.js?v=10';
+} from './services/reconciler.js?v=11';
 import {
   scanReceiptWithGemini,
   classifyStatementRowsWithGemini,
   getDemoScannedReceipt,
   generateMonthlyFamilyAuditWithGemini
-} from './services/geminiScanner.js?v=10';
-import { exportStateToExcel } from './services/excelExport.js?v=10';
+} from './services/geminiScanner.js?v=11';
+import { exportStateToExcel } from './services/excelExport.js?v=11';
+import {
+  parseQuickNaturalExpense,
+  buildInstallmentTransactions,
+  getQuickPresetsForAuthor
+} from './services/smartInput.js?v=11';
 import {
   calculateMonthlyFinancialSummary,
   calculateBurnRateAndProjection,
   calculateLoansLedger,
   filterTransactions,
   calculateFilteredTransactionsTotals,
-  generateInstantFamilyDiagnosis
-} from './domain/financialEngine.js?v=10';
+  generateInstantFamilyDiagnosis,
+  detectAntExpensesAndSubscriptions,
+  calculateMultiMonthComparison,
+  clonePreviousMonthBudget,
+  buildCoupleWhatsAppMessages
+} from './domain/financialEngine.js?v=11';
 
 // Estado global en memoria de la aplicación
 let appState = loadState();
@@ -154,11 +163,13 @@ let quickForm = {
   amount: '',
   categoryId: 'supermercado',
   paymentMethod: userPrefs.defaultPaymentMethod || 'cmr_falabella',
+  author: userPrefs.activeAuthor || 'el',
   installments: 1,
   isSharedBill: false,
   myRealShare: '',
   date: getTodayISO(),
-  note: ''
+  note: '',
+  naturalInputText: ''
 };
 
 // Estado del divisor de boletas (manual + IA)
@@ -232,7 +243,8 @@ function isUserTyping() {
 }
 
 /**
- * Motor Contable Familiar con Arrastre Multi-Mes (Rollover), Burn Rate y Diagnóstico Ejecutivo (0 ms).
+ * Motor Contable Familiar con Arrastre Multi-Mes (Rollover), Burn Rate, Gastos Hormiga,
+ * Comparativa Multi-Mes, Mensajes de Equipo por WhatsApp y Diagnóstico Ejecutivo (0 ms).
  * Delega la lógica matemática pura a `src/domain/financialEngine.js`.
  */
 function getMonthMetrics(ym) {
@@ -242,12 +254,27 @@ function getMonthMetrics(ym) {
   const burnRate = calculateBurnRateAndProjection(summary, ym, todayISO);
   const loansLedger = summary.loansLedger || calculateLoansLedger(appState.transactions || [], appState.learnedContacts || {});
   const instantDiagnosis = generateInstantFamilyDiagnosis(summary, burnRate, loansLedger);
+  const antReport =
+    typeof detectAntExpensesAndSubscriptions === 'function'
+      ? detectAntExpensesAndSubscriptions(appState.transactions || [], ym)
+      : null;
+  const monthComparison =
+    typeof calculateMultiMonthComparison === 'function'
+      ? calculateMultiMonthComparison(appState, ym, 6)
+      : null;
+  const coupleWhatsApp =
+    typeof buildCoupleWhatsAppMessages === 'function'
+      ? buildCoupleWhatsAppMessages(summary, appState, ym)
+      : null;
 
   return {
     ...summary,
     burnRate,
     loansLedger,
-    instantDiagnosis
+    instantDiagnosis,
+    antReport,
+    monthComparison,
+    coupleWhatsApp
   };
 }
 
@@ -345,6 +372,7 @@ export function renderApp() {
   const root = document.getElementById('app-root');
   if (!root) return;
 
+  quickForm.author = userPrefs.activeAuthor || 'el';
   const metrics = getMonthMetrics(activeYearMonth);
   const hasDemoData = (appState.transactions || []).some((t) => t.isDemo);
 
@@ -425,10 +453,10 @@ export function renderApp() {
           <strong class="shield-value">${formatCLP(metrics.cmrPendingReserve)}</strong>
         </div>
 
-        <div class="shield-pill shield-wife" data-action="jump-shield" data-target="wife" title="Toca para registrar una transferencia a Marie">
+        <div class="shield-pill shield-wife" data-action="jump-shield" data-target="wife" title="Toca para abrir el Fondo Familiar de Marie">
           <div class="shield-label">
-            <span>👩🏻 Saldo Cuenta Marie</span>
-            <span class="shield-sub">${metrics.wifeCarryoverPrev !== 0 ? `Arrastre: ${formatCLP(metrics.wifeCarryoverPrev)}` : 'Disponible de traspasos'}</span>
+            <span>💖 Fondo Familiar de Marie</span>
+            <span class="shield-sub">${metrics.wifeCarryoverPrev !== 0 ? `Arrastre: ${formatCLP(metrics.wifeCarryoverPrev)}` : 'Disponible en Fondo Familiar de Marie'}</span>
           </div>
           <strong class="shield-value">${formatCLP(metrics.wifeWalletRemaining)}</strong>
         </div>
@@ -489,12 +517,15 @@ export function renderApp() {
 }
 
 // ============================================================================
-// WIDGET DE RITMO DEL MES (BURN RATE) & DIAGNÓSTICO EJECUTIVO FAMILIAR (0 ms + IA)
+// WIDGET DE RITMO DEL MES (BURN RATE), GASTOS HORMIGA, COMPARATIVA & DIAGNÓSTICO IA
 // ============================================================================
 function renderBurnRateAndDiagnosisWidget(metrics) {
   const burn = metrics.burnRate || calculateBurnRateAndProjection(metrics, activeYearMonth, getTodayISO());
   const hasAiForMonth = diagnosisState.aiAuditResult && diagnosisState.aiAuditMonth === activeYearMonth;
   const diag = hasAiForMonth ? diagnosisState.aiAuditResult : metrics.instantDiagnosis;
+  const ant = metrics.antReport?.antExpenses || { count: 0, totalAmount: 0, percentOfTotalSpend: 0 };
+  const subs = metrics.antReport?.subscriptions || { count: 0, totalMonthlySubscriptions: 0, duplicateAlerts: [] };
+  const comp = metrics.monthComparison;
 
   const paceBadgeMap = {
     bajo_control: { label: '🟢 Ritmo Bajo Control', cls: 'bar-green' },
@@ -520,14 +551,25 @@ function renderBurnRateAndDiagnosisWidget(metrics) {
           </p>
         </div>
 
-        <button
-          type="button"
-          class="${diagnosisState.isOpen ? 'btn-secondary-sm' : 'btn-primary'}"
-          data-action="toggle-family-diagnosis"
-          style="white-space:nowrap;font-size:0.79rem;padding:8px 13px;"
-        >
-          ${diagnosisState.isOpen ? '🔼 Ocultar Diagnóstico' : '🧠 Ver Diagnóstico Familiar & Plan de Acción'}
-        </button>
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:7px;">
+          <button
+            type="button"
+            class="btn-whatsapp-couple"
+            data-action="send-couple-whatsapp"
+            data-msg-type="weeklyTeamSummary"
+            title="Enviar Resumen Familiar de 10 segundos por WhatsApp"
+          >
+            💬 Avisar por WhatsApp
+          </button>
+          <button
+            type="button"
+            class="${diagnosisState.isOpen ? 'btn-secondary-sm' : 'btn-primary'}"
+            data-action="toggle-family-diagnosis"
+            style="white-space:nowrap;font-size:0.79rem;padding:8px 13px;"
+          >
+            ${diagnosisState.isOpen ? '🔼 Ocultar Diagnóstico' : '🧠 Ver Diagnóstico Familiar & Plan de Acción'}
+          </button>
+        </div>
       </div>
 
       <div class="progress-track-wrapper" style="margin:12px 0 6px;">
@@ -547,6 +589,23 @@ function renderBurnRateAndDiagnosisWidget(metrics) {
             ? `✅ Holgura +${formatCLP(burn.projectedSurplusOrDeficit)}`
             : `⚠️ Excede por ${formatCLP(Math.abs(burn.projectedSurplusOrDeficit))}`})
         </span>
+      </div>
+
+      <!-- Cinta compacta de Gastos Hormiga & Comparativa vs Mes Anterior -->
+      <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;padding-top:9px;border-top:1px dashed var(--border-color);font-size:0.75rem;color:var(--text-secondary);">
+        <span>
+          🐜 <strong>Gastos Hormiga:</strong> ${ant.count} micro-compras por <strong>${formatCLP(ant.totalAmount)}</strong> (${ant.percentOfTotalSpend}% del gasto)
+          ${subs.count > 0 ? ` • 📺 <strong>Suscripciones:</strong> ${formatCLP(subs.totalMonthlySubscriptions)}/mes` : ''}
+          ${subs.duplicateAlerts?.length > 0 ? ` <span class="sem-badge bar-red">⚠️ ${subs.duplicateAlerts.length} cobro(s) repetido(s)</span>` : ''}
+        </span>
+        ${comp ? `
+          <span>
+            📈 <strong>vs ${getMonthNameLabel(comp.previousMonth.yearMonth)}:</strong>
+            ${comp.previousMonth.hasData
+              ? `${comp.deltaExpense <= 0 ? '🟢' : '🟡'} ${comp.deltaExpense > 0 ? '+' : ''}${formatCLP(comp.deltaExpense)} (${comp.deltaExpensePct > 0 ? '+' : ''}${comp.deltaExpensePct}%)`
+              : 'Primer mes con registros'}
+          </span>
+        ` : ''}
       </div>
 
       ${diagnosisState.isOpen && diag ? `
@@ -593,7 +652,7 @@ function renderBurnRateAndDiagnosisWidget(metrics) {
               <p>${String(diag.cmrShieldDiagnosis)}</p>
             </div>
             <div class="insight-box insight-wife">
-              <h4>👩🏻 Diagnóstico Cuenta Marie</h4>
+              <h4>💖 Fondo Familiar de Marie</h4>
               <p>${String(diag.wifeAccountDiagnosis)}</p>
             </div>
           </div>
@@ -625,13 +684,11 @@ function renderBurnRateAndDiagnosisWidget(metrics) {
 }
 
 // ============================================================================
-// PESTAÑA 1: REGISTRAR (5 SEGUNDOS + BOLETA DIVIDIDA IA + TRASPASOS Y PRÉSTAMOS)
+// PESTAÑA 1: REGISTRAR (REGLA DE LOS 5 SEGUNDOS SIEMPRE PRIMERO EN EL IPHONE)
 // ============================================================================
 function renderRegisterTab(metrics) {
   return `
-    ${renderBurnRateAndDiagnosisWidget(metrics)}
-
-    <section class="card-panel">
+    <section class="card-panel" style="margin-bottom:16px;">
       <div class="mode-pills">
         <button type="button" class="mode-pill ${registerMode === 'quick' ? 'active' : ''}" data-action="set-register-mode" data-mode="quick">
           ⚡ Gasto (5 seg)
@@ -640,7 +697,7 @@ function renderRegisterTab(metrics) {
           📸 Dividir Boleta IA
         </button>
         <button type="button" class="mode-pill ${registerMode === 'internal' ? 'active' : ''}" data-action="set-register-mode" data-mode="internal">
-          🔄 Marie / CMR / Préstamos
+          💖 Fondo Marie / CMR / Préstamos
         </button>
       </div>
 
@@ -648,6 +705,8 @@ function renderRegisterTab(metrics) {
       ${registerMode === 'split' ? renderSplitReceiptForm(metrics) : ''}
       ${registerMode === 'internal' ? renderInternalAndIncomeForm(metrics) : ''}
     </section>
+
+    ${renderBurnRateAndDiagnosisWidget(metrics)}
 
     ${renderRecentTransactionsList(metrics)}
   `;
@@ -658,14 +717,61 @@ function renderQuickExpenseForm(metrics) {
   const selectedCat = categories.find((c) => c.id === quickForm.categoryId) || categories[0];
   const displayAmount = formatLiveCLPInput(quickForm.amount);
   const displayMyShare = formatLiveCLPInput(quickForm.myRealShare);
+  const activeAuthor = quickForm.author || userPrefs.activeAuthor || 'el';
+  const authorPresets =
+    typeof getQuickPresetsForAuthor === 'function' ? getQuickPresetsForAuthor(activeAuthor) : [];
 
   return `
     <form id="quick-expense-form" class="quick-form">
+      <!-- 🎙️ Barra de Dictado por Voz / Frase Rápida estilo WhatsApp -->
+      <div class="smart-natural-bar">
+        <div class="smart-natural-header">
+          <span>🎙️ <strong>Escribe o dicta en 1 frase</strong> (ej: <em>"15 lucas feria"</em> o <em>"60 mil zapatos hija en 3 cuotas"</em>)</span>
+          <span class="smart-natural-badge">⚡ 0 ms</span>
+        </div>
+        <div class="smart-natural-row">
+          <input
+            type="text"
+            id="smart-natural-input"
+            class="text-input smart-natural-input"
+            autocomplete="off"
+            placeholder="🎙️ Dicta o escribe: '15 lucas feria' o '24500 pañales cmr'..."
+            value="${quickForm.naturalInputText || ''}"
+          />
+          <button type="button" class="btn-smart-parse" data-action="apply-smart-natural-input">
+            ✨ Autocompletar
+          </button>
+        </div>
+      </div>
+
+      <!-- ⚡ Atajos Frecuentes de 1 Toque personalizados según quién usa el iPhone -->
+      <div class="author-presets-wrap">
+        <div class="author-presets-label">
+          <span>⚡ Atajos de 1 toque para <strong>${activeAuthor === 'ella' ? '👩🏻 Marie' : '🧔‍♂️ Mauricio'}</strong>:</span>
+          <small>Elige categoría y cuenta al instante</small>
+        </div>
+        <div class="author-presets-row">
+          ${authorPresets.map((preset) => `
+            <button
+              type="button"
+              class="author-preset-chip ${activeAuthor === 'ella' ? 'preset-ella' : 'preset-el'}"
+              data-action="apply-author-preset"
+              data-cat="${preset.categoryId}"
+              data-pm="${preset.paymentMethod}"
+              data-note="${preset.defaultNote || preset.label}"
+            >
+              <span>${preset.icon}</span>
+              <span>${preset.label}</span>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+
       <!-- Paso 1: Hero Visor de Monto con Formato de Miles en Vivo -->
       <div class="amount-box">
         <div class="step-label">
           <span>1. ¿Cuánto costó? (CLP)</span>
-          <span>Registrando como: <strong>${userPrefs.activeAuthor === 'ella' ? '👩🏻 Marie' : '🧔‍♂️ Mauricio'}</strong></span>
+          <span>Registrando como: <strong>${activeAuthor === 'ella' ? '👩🏻 Marie' : '🧔‍♂️ Mauricio'}</strong></span>
         </div>
         <div class="amount-input-row">
           <span class="currency-prefix">$</span>
@@ -745,24 +851,37 @@ function renderQuickExpenseForm(metrics) {
           `).join('')}
         </div>
         ${quickForm.paymentMethod === 'cmr_falabella' ? `
-          <div class="helper-hint cmr-hint">
-            <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;">
-              <span>🟢 <strong>Escudo CMR:</strong> Se descuenta hoy del presupuesto y se suma a tu <em>Reserva para pagar CMR</em>.</span>
-              <label style="display:inline-flex;align-items:center;gap:6px;font-weight:700;">
-                <span>¿En cuotas?</span>
-                <select id="quick-installments-select" class="text-input" style="width:auto;padding:4px 8px;">
-                  <option value="1" ${Number(quickForm.installments || 1) === 1 ? 'selected' : ''}>1 cuota (Mes actual)</option>
-                  <option value="3" ${Number(quickForm.installments) === 3 ? 'selected' : ''}>3 cuotas mensuales</option>
-                  <option value="6" ${Number(quickForm.installments) === 6 ? 'selected' : ''}>6 cuotas mensuales</option>
-                  <option value="12" ${Number(quickForm.installments) === 12 ? 'selected' : ''}>12 cuotas mensuales</option>
-                </select>
-              </label>
+          <div class="cmr-installments-bar">
+            <span class="cmr-installments-label">💳 Cuotas CMR:</span>
+            <div class="cmr-installments-pills">
+              ${[
+                { count: 1, label: '1 cuota (mes)' },
+                { count: 3, label: '3 cuotas' },
+                { count: 6, label: '6 cuotas' },
+                { count: 12, label: '12 cuotas' }
+              ].map((opt) => `
+                <button
+                  type="button"
+                  class="cmr-inst-pill ${Number(quickForm.installments || 1) === opt.count ? 'active' : ''}"
+                  data-action="set-quick-installments"
+                  data-installments="${opt.count}"
+                >
+                  ${opt.label}
+                </button>
+              `).join('')}
             </div>
+          </div>
+          <div class="helper-hint cmr-hint">
+            <span>🟢 <strong>Escudo CMR:</strong> ${
+              Number(quickForm.installments || 1) > 1
+                ? `Se dividirá en <strong>${quickForm.installments} cuotas mensuales sin interés</strong>; la Cuota 1 entra al presupuesto y reserva CMR de este mes.`
+                : `Se descuenta hoy del presupuesto y se suma a tu <em>Reserva para pagar CMR</em>.`
+            }</span>
           </div>
         ` : ''}
         ${quickForm.paymentMethod === 'cuenta_mujer' ? `
           <p class="helper-hint wife-hint">
-            👩🏻 <strong>Cuenta Marie:</strong> Descuenta del presupuesto familiar y rebaja el saldo que le transferiste.
+            💖 <strong>Fondo Familiar de Marie:</strong> Se suma a <em>Compras Familiares desde Cuenta de Marie</em> y actualiza el <em>Disponible en Fondo Familiar de Marie</em>.
           </p>
         ` : ''}
       </div>
@@ -817,7 +936,7 @@ function renderQuickExpenseForm(metrics) {
       <!-- Vista previa en vivo del impacto antes de guardar -->
       <div id="live-impact-banner" class="live-impact-banner" style="display:none;"></div>
 
-      <button type="submit" class="btn-primary-giant">
+      <button type="submit" class="btn-primary-giant" data-action="save-quick-expense">
         ✅ Guardar en ${selectedCat?.icon || ''} ${selectedCat?.name || 'Categoría'}
       </button>
     </form>
@@ -938,8 +1057,8 @@ function renderInternalAndIncomeForm(metrics) {
     <!-- Selector limpio de 4 tarjetas para no saturar la pantalla del iPhone -->
     <div class="internal-subnav">
       <button type="button" class="internal-nav-card ${internalSubTab === 'wife' ? 'active' : ''}" data-action="set-internal-subtab" data-sub="wife">
-        <span class="internal-nav-title">👩🏻💸 A Marie</span>
-        <span class="internal-nav-sub">Saldo: ${formatCLP(metrics.wifeWalletRemaining)}</span>
+        <span class="internal-nav-title">💖 Fondo de Marie</span>
+        <span class="internal-nav-sub">Disponible: ${formatCLP(metrics.wifeWalletRemaining)}</span>
       </button>
       <button type="button" class="internal-nav-card ${internalSubTab === 'cmr' ? 'active' : ''}" data-action="set-internal-subtab" data-sub="cmr">
         <span class="internal-nav-title">🟢💳 Pagar CMR</span>
@@ -958,19 +1077,22 @@ function renderInternalAndIncomeForm(metrics) {
     ${internalSubTab === 'wife' ? `
       <div class="internal-card">
         <div class="internal-card-header">
-          <span class="internal-icon">👩🏻💸</span>
+          <span class="internal-icon">💖💸</span>
           <div>
-            <h3>Transferencia a Marie (Traspaso Interno Familiar)</h3>
-            <p>Cuando le transfieres desde tu Banco de Chile, <strong>NO se cobra como gasto</strong> para jamás duplicar. Carga el saldo disponible de Marie (${formatCLP(metrics.wifeWalletRemaining)}) y el presupuesto se descuenta cuando ella anota sus compras.</p>
+            <h3>💖 Fondo Familiar de Marie (Recarga sin Duplicar Gasto)</h3>
+            <p>
+              Cuando transfieres desde Banco de Chile al <strong>💖 Fondo Familiar de Marie</strong>, <strong>NO se cobra como gasto</strong> para jamás duplicar.
+              Suma a su <strong>Disponible en Fondo Familiar de Marie (${formatCLP(metrics.wifeWalletRemaining)})</strong> y el presupuesto familiar se actualiza cuando se anotan las <strong>Compras Familiares desde Cuenta de Marie (${formatCLP(metrics.spentFromWifeAccount)})</strong>.
+            </p>
           </div>
         </div>
         <div class="form-row-two">
           <div class="input-group">
-            <label>Monto Transferido a Marie (CLP)</label>
+            <label>Monto Recargado al Fondo Familiar de Marie (CLP)</label>
             <input type="text" inputmode="numeric" id="wife-transfer-amount" class="text-input live-clp-input" placeholder="Ej: 150.000" />
           </div>
           <div class="input-group">
-            <label>Desde mi cuenta</label>
+            <label>Desde cuenta</label>
             <select id="wife-transfer-from" class="text-input">
               <option value="bch_ctacte">🏦 Banco de Chile (Cta. Corriente)</option>
               <option value="bch_vista">💳 Banco de Chile (Cta. Vista / FAN)</option>
@@ -978,8 +1100,21 @@ function renderInternalAndIncomeForm(metrics) {
           </div>
         </div>
         <button type="button" class="btn-internal-wife" data-action="save-wife-transfer">
-          💸 Registrar Traspaso a Marie
+          💸 Registrar Recarga al Fondo Familiar de Marie
         </button>
+
+        <div class="whatsapp-couple-bar">
+          <span style="font-size:0.75rem;font-weight:700;color:var(--text-secondary);">💬 Avisar por WhatsApp con 1 toque:</span>
+          <button type="button" class="btn-whatsapp-couple" data-action="send-couple-whatsapp" data-msg-type="transferConfirmationToMarie">
+            💬 Avisar por WhatsApp que ya transferí
+          </button>
+          <button type="button" class="btn-whatsapp-couple btn-wa-pink" data-action="send-couple-whatsapp" data-msg-type="lowWifeWalletRequest">
+            💖 Pedir recarga cariñosa por WhatsApp
+          </button>
+          <button type="button" class="btn-secondary-sm" data-action="send-couple-whatsapp" data-msg-type="weeklyTeamSummary">
+            🛡️ Resumen Familiar (10 seg)
+          </button>
+        </div>
       </div>
     ` : ''}
 
@@ -1186,8 +1321,8 @@ function renderTransactionRowsHtml(filteredTxs, totalMonthCount) {
           amountClass = 'tx-amt-income';
           prefix = '+';
         } else if (isWifeTransfer) {
-          icon = '👩🏻💸';
-          title = 'Traspaso a Marie (No duplica gasto)';
+          icon = '💖💸';
+          title = 'Recarga a 💖 Fondo Familiar de Marie (No duplica gasto)';
           amountClass = 'tx-amt-internal';
           prefix = '⇄ ';
         } else if (tx.type === 'cmr_payment') {
@@ -1329,7 +1464,7 @@ function renderRecentTransactionsList(metrics) {
           <button type="button" class="chip-btn" style="${txFilterState.paymentMethod === 'all' ? 'background:var(--primary-accent);color:#fff;border-color:var(--primary-accent);' : ''}" data-action="set-tx-filter-pm" data-pm="all">Todos</button>
           <button type="button" class="chip-btn" style="${txFilterState.paymentMethod === 'cmr_falabella' ? 'background:var(--primary-accent);color:#fff;border-color:var(--primary-accent);' : ''}" data-action="set-tx-filter-pm" data-pm="cmr_falabella">🟢 CMR</button>
           <button type="button" class="chip-btn" style="${txFilterState.paymentMethod === 'bch_all' ? 'background:var(--primary-accent);color:#fff;border-color:var(--primary-accent);' : ''}" data-action="set-tx-filter-pm" data-pm="bch_all">🏦 B. Chile</button>
-          <button type="button" class="chip-btn" style="${txFilterState.paymentMethod === 'cuenta_mujer' ? 'background:var(--primary-accent);color:#fff;border-color:var(--primary-accent);' : ''}" data-action="set-tx-filter-pm" data-pm="cuenta_mujer">👩🏻 Cta. Mujer</button>
+          <button type="button" class="chip-btn" style="${txFilterState.paymentMethod === 'cuenta_mujer' ? 'background:var(--primary-accent);color:#fff;border-color:var(--primary-accent);' : ''}" data-action="set-tx-filter-pm" data-pm="cuenta_mujer">💖 Fondo Marie</button>
           <button type="button" class="chip-btn" style="${txFilterState.paymentMethod === 'efectivo' ? 'background:var(--primary-accent);color:#fff;border-color:var(--primary-accent);' : ''}" data-action="set-tx-filter-pm" data-pm="efectivo">💵 Efectivo</button>
         </div>
 
@@ -1429,6 +1564,125 @@ function renderEditTransactionModal() {
 }
 
 // ============================================================================
+// TARJETA COMPACTA: DETECTOR DE GASTOS HORMIGA & SUSCRIPCIONES + COMPARATIVA MENSUAL
+// ============================================================================
+function renderAntExpensesAndComparisonCard(metrics) {
+  const antReport = metrics.antReport || (
+    typeof detectAntExpensesAndSubscriptions === 'function'
+      ? detectAntExpensesAndSubscriptions(appState.transactions || [], activeYearMonth)
+      : null
+  );
+  const comp = metrics.monthComparison || (
+    typeof calculateMultiMonthComparison === 'function'
+      ? calculateMultiMonthComparison(appState, activeYearMonth, 6)
+      : null
+  );
+
+  const ant = antReport?.antExpenses || {
+    count: 0,
+    totalAmount: 0,
+    annualizedProjection: 0,
+    percentOfTotalSpend: 0,
+    topMerchants: []
+  };
+  const subs = antReport?.subscriptions || {
+    count: 0,
+    totalMonthlySubscriptions: 0,
+    annualizedSubscriptions: 0,
+    items: [],
+    duplicateAlerts: []
+  };
+
+  const prevMonthLabel = comp?.previousMonth?.yearMonth
+    ? getMonthNameLabel(comp.previousMonth.yearMonth)
+    : 'Mes anterior';
+  const topCatChanges = (comp?.categoryDeltas || [])
+    .filter((c) => c.currentSpent > 0 || c.prevSpent > 0)
+    .slice(0, 4);
+
+  return `
+    <section class="card-panel mt-section">
+      <div class="section-header-row" style="margin-bottom:12px;">
+        <div>
+          <h2 class="section-title">🐜 Detector de Gastos Hormiga & Suscripciones + 📈 Comparativa Mensual</h2>
+          <p class="section-subtitle">Identifica micro-fugas silenciosas (≤ $15.000), suscripciones recurrentes y evolución frente a ${prevMonthLabel}</p>
+        </div>
+      </div>
+
+      <div class="ant-comparison-grid">
+        <!-- Columna 1: Gastos Hormiga & Suscripciones -->
+        <div class="ant-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+            <strong style="font-size:0.88rem;">🐜 Gastos Hormiga & Suscripciones</strong>
+            <span class="sem-badge ${ant.percentOfTotalSpend >= 15 ? 'bar-red' : ant.percentOfTotalSpend >= 8 ? 'bar-yellow' : 'bar-green'}">
+              ${ant.count} micro-compras (${ant.percentOfTotalSpend}% del gasto)
+            </span>
+          </div>
+
+          <p style="font-size:0.79rem;color:var(--text-secondary);">
+            Total hormiga este mes: <strong>${formatCLP(ant.totalAmount)}</strong>
+            (Proyección anual: <strong>${formatCLP(ant.annualizedProjection)}/año</strong>) •
+            Suscripciones detectadas: <strong>${subs.count}</strong> por <strong>${formatCLP(subs.totalMonthlySubscriptions)}/mes</strong>.
+          </p>
+
+          ${ant.topMerchants && ant.topMerchants.length > 0 ? `
+            <div class="ant-merchant-list">
+              ${ant.topMerchants.slice(0, 4).map((m) => `
+                <span class="ant-merchant-pill">
+                  ${m.name}: <strong>${formatCLP(m.totalAmount)}</strong> (${m.count}x)
+                </span>
+              `).join('')}
+            </div>
+          ` : `
+            <p style="font-size:0.76rem;color:var(--text-muted);">✅ Sin fugas de gastos hormiga registradas en ${getMonthNameLabel(activeYearMonth)}.</p>
+          `}
+
+          ${subs.duplicateAlerts && subs.duplicateAlerts.length > 0 ? `
+            ${subs.duplicateAlerts.map((dup) => `
+              <div class="sub-duplicate-alert">
+                🚨 <strong>${dup.message}</strong>
+              </div>
+            `).join('')}
+          ` : ''}
+        </div>
+
+        <!-- Columna 2: Comparativa vs Mes Anterior -->
+        <div class="comparison-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+            <strong style="font-size:0.88rem;">📈 Comparativa vs ${prevMonthLabel}</strong>
+            ${comp && comp.previousMonth.hasData ? `
+              <span class="sem-badge ${comp.deltaExpense <= 0 ? 'bar-green' : 'bar-yellow'}">
+                ${comp.deltaExpense > 0 ? '+' : ''}${formatCLP(comp.deltaExpense)} (${comp.deltaExpensePct > 0 ? '+' : ''}${comp.deltaExpensePct}%)
+              </span>
+            ` : `
+              <span class="sem-badge bar-green">📊 Mes Base Activo</span>
+            `}
+          </div>
+
+          ${comp ? `
+            <p style="font-size:0.79rem;color:var(--text-secondary);">
+              Gasto actual: <strong>${formatCLP(comp.currentMonth.netExpense)}</strong> vs
+              ${prevMonthLabel}: <strong>${formatCLP(comp.previousMonth.netExpense)}</strong> •
+              Ahorro estimado este mes: <strong>${formatCLP(comp.currentMonth.savingsAchieved)}</strong>.
+            </p>
+            ${topCatChanges.length > 0 ? `
+              <div class="comparison-cat-list">
+                ${topCatChanges.map((cd) => `
+                  <span class="ant-merchant-pill">
+                    ${cd.icon} ${cd.name}: <strong>${formatCLP(cd.currentSpent)}</strong>
+                    (${cd.deltaAmount >= 0 ? `+${formatCLP(cd.deltaAmount)}` : formatCLP(cd.deltaAmount)})
+                  </span>
+                `).join('')}
+              </div>
+            ` : ''}
+          ` : ''}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+// ============================================================================
 // PESTAÑA 2: PRESUPUESTOS CON AGUJA DE RITMO ("📍 HOY") Y ARRASTRE MULTI-MES
 // ============================================================================
 function renderBudgetTab(metrics) {
@@ -1480,15 +1734,28 @@ function renderBudgetTab(metrics) {
         </div>
 
         <div class="insight-box insight-wife">
-          <h4>👩🏻 Transparencia Cuenta Marie (Con Arrastre)</h4>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+            <h4 style="margin:0;">💖 Fondo Familiar de Marie (Con Arrastre)</h4>
+            <button
+              type="button"
+              class="btn-whatsapp-couple btn-wa-pink"
+              data-action="send-couple-whatsapp"
+              data-msg-type="lowWifeWalletRequest"
+              style="padding:4px 10px;font-size:0.72rem;"
+            >
+              💬 Avisar por WhatsApp
+            </button>
+          </div>
           <p>
-            Transferido este mes: <strong>${formatCLP(metrics.transferredToWife)}</strong>${metrics.wifeCarryoverPrev !== 0 ? ` (Arrastre ant.: ${formatCLP(metrics.wifeCarryoverPrev)})` : ''}.
-            <br/>Gastos anotados por Marie: <strong>${formatCLP(metrics.spentFromWifeAccount)}</strong>.
-            <br/>👉 Saldo disponible en su cuenta: <strong>${formatCLP(metrics.wifeWalletRemaining)}</strong>.
+            Recargado este mes: <strong>${formatCLP(metrics.transferredToWife)}</strong>${metrics.wifeCarryoverPrev !== 0 ? ` (Arrastre ant.: ${formatCLP(metrics.wifeCarryoverPrev)})` : ''}.
+            <br/>Compras Familiares desde Cuenta de Marie: <strong>${formatCLP(metrics.spentFromWifeAccount)}</strong>.
+            <br/>👉 Disponible en Fondo Familiar de Marie: <strong>${formatCLP(metrics.wifeWalletRemaining)}</strong>.
           </p>
         </div>
       </div>
     </section>
+
+    ${renderAntExpensesAndComparisonCard(metrics)}
 
     <section class="card-panel mt-section">
       <div class="section-header-row">
@@ -1496,9 +1763,14 @@ function renderBudgetTab(metrics) {
           <h2 class="section-title">🚦 Semáforo por Categoría (Aguja 📍 = Día ${metrics.currentDay})</h2>
           <p class="section-subtitle">Si la barra de color está a la izquierda de la aguja 📍 Hoy, vas ganándole al mes</p>
         </div>
-        <button type="button" class="btn-secondary" data-action="toggle-edit-budgets">
-          ${isEditingBudgets ? '✖️ Cancelar' : '✏️ Ajustar Presupuestos'}
-        </button>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+          <button type="button" class="btn-secondary" data-action="clone-prev-budget">
+            📋 Copiar Presupuesto del Mes Anterior
+          </button>
+          <button type="button" class="btn-secondary" data-action="toggle-edit-budgets">
+            ${isEditingBudgets ? '✖️ Cancelar' : '✏️ Ajustar Presupuestos'}
+          </button>
+        </div>
       </div>
 
       ${isEditingBudgets ? renderBudgetEditorForm(metrics) : `
@@ -1805,12 +2077,12 @@ function renderReconcileTab() {
                   const isToWife = row.internalType === 'transfer_wife';
                   const isSelf = row.internalType === 'transfer_self';
                   const badgeTitle = isToWife
-                    ? '👩🏻 TRASPASO A MARIE (CUENTA MUJER)'
+                    ? '💖 RECARGA A FONDO FAMILIAR DE MARIE'
                     : isSelf
                       ? '🔄 ENTRE MIS CUENTAS (IGNORADO)'
                       : '🟢 PAGO FACTURACIÓN CMR';
                   const subText = isToWife
-                    ? 'No suma como gasto; carga el saldo disponible de Marie.'
+                    ? 'No suma como gasto; recarga el saldo disponible del Fondo Familiar de Marie.'
                     : isSelf
                       ? 'Traspaso entre tus propias cuentas (ej. Cta. Cte. ↔ FAN). Se ignora automáticamente.'
                       : 'Pago de tarjeta CMR.';
@@ -1825,7 +2097,7 @@ function renderReconcileTab() {
                       <div class="rec-row-controls">
                         <select class="text-input rec-internal-type-select" data-idx="${idx}" style="width:auto;">
                           <option value="transfer_self" ${row.internalType === 'transfer_self' ? 'selected' : ''}>🔄 Entre mis cuentas (Ignorar)</option>
-                          <option value="transfer_wife" ${row.internalType === 'transfer_wife' ? 'selected' : ''}>👩🏻 Traspaso a Marie</option>
+                          <option value="transfer_wife" ${row.internalType === 'transfer_wife' ? 'selected' : ''}>💖 Recarga a Fondo Familiar de Marie</option>
                           <option value="cmr_payment" ${row.internalType === 'cmr_payment' ? 'selected' : ''}>🟢 Pago Facturación CMR</option>
                           <option value="convert_to_expense">💸 Es un Gasto Real (Pago a 3º)</option>
                         </select>
@@ -2049,6 +2321,45 @@ function renderCloudTab() {
 // ============================================================================
 // CONTROLADORES Y EVENTOS (SIN PÉRDIDA DE FOCO EN IPHONE)
 // ============================================================================
+function applySmartNaturalInput() {
+  const inputEl = document.getElementById('smart-natural-input');
+  const rawVal = String(inputEl ? inputEl.value : quickForm.naturalInputText || '').trim();
+  if (!rawVal) {
+    showToast('Dicta o escribe una frase como "Jumbo 45mil cmr 3 cuotas" o "Feria 15000"', 'error');
+    return;
+  }
+
+  const parsed = parseQuickNaturalExpense(rawVal, userPrefs.activeAuthor || 'el');
+  if (parsed.amount > 0) {
+    quickForm.amount = String(parsed.amount);
+  }
+  if (parsed.categoryId && parsed.categoryId !== 'traspaso_interno') {
+    quickForm.categoryId = parsed.categoryId;
+  }
+  if (parsed.paymentMethod) {
+    quickForm.paymentMethod = parsed.paymentMethod;
+  }
+  quickForm.installments =
+    quickForm.paymentMethod === 'cmr_falabella' ? Math.max(1, Number(parsed.installments || 1)) : 1;
+  if (parsed.cleanNote) {
+    quickForm.note = parsed.cleanNote;
+  }
+  quickForm.naturalInputText = '';
+
+  const catObj = (appState.categories || []).find((c) => c.id === quickForm.categoryId);
+  const catName = catObj ? `${catObj.icon} ${catObj.name}` : quickForm.categoryId;
+
+  showToast(
+    `✨ Detectado: ${parsed.amount > 0 ? formatCLP(parsed.amount) : 'Monto por completar'} → ${catName}${
+      quickForm.paymentMethod === 'cmr_falabella' && quickForm.installments > 1
+        ? ` (${quickForm.installments} cuotas)`
+        : ''
+    }`,
+    'success'
+  );
+  renderApp();
+}
+
 function attachDynamicInputListeners() {
   const monthPicker = document.getElementById('month-picker');
   if (monthPicker) {
@@ -2057,6 +2368,20 @@ function attachDynamicInputListeners() {
         activeYearMonth = e.target.value;
         ensureMonthBudget(appState, activeYearMonth);
         renderApp();
+      }
+    };
+  }
+
+  // Barra de Frase Rápida / Dictado de Voz iPhone (#smart-natural-input)
+  const naturalInput = document.getElementById('smart-natural-input');
+  if (naturalInput) {
+    naturalInput.oninput = (e) => {
+      quickForm.naturalInputText = e.target.value;
+    };
+    naturalInput.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        applySmartNaturalInput();
       }
     };
   }
@@ -2133,7 +2458,7 @@ function attachDynamicInputListeners() {
     };
   }
 
-  // Guardar Gasto Rápido (con ajuste exacto del primer peso en cuotas CMR)
+  // Guardar Gasto Rápido (con soporte de cuotas CMR a través de buildInstallmentTransactions)
   const quickFormEl = document.getElementById('quick-expense-form');
   if (quickFormEl) {
     quickFormEl.onsubmit = (e) => {
@@ -2192,6 +2517,7 @@ function attachDynamicInputListeners() {
         saveState(appState);
         quickForm.amount = '';
         quickForm.note = '';
+        quickForm.naturalInputText = '';
         quickForm.isSharedBill = false;
         quickForm.myRealShare = '';
         showToast(
@@ -2205,50 +2531,36 @@ function attachDynamicInputListeners() {
       const totalInstallments =
         quickForm.paymentMethod === 'cmr_falabella' ? Math.max(1, Number(quickForm.installments || 1)) : 1;
 
+      const baseTx = {
+        id: `tx_${Date.now()}`,
+        date: baseDate,
+        type: 'expense',
+        amount: amountNum,
+        categoryId: quickForm.categoryId,
+        paymentMethod: quickForm.paymentMethod,
+        author: userPrefs.activeAuthor || 'el',
+        note: quickForm.note.trim() || (totalInstallments > 1 ? 'Compra en cuotas' : 'Registro rápido'),
+        reconciled: false,
+        createdAt: nowISO,
+        updatedAt: nowISO
+      };
+
       if (totalInstallments === 1) {
-        appState.transactions.push({
-          id: `tx_${Date.now()}`,
-          date: baseDate,
-          type: 'expense',
-          amount: amountNum,
-          categoryId: quickForm.categoryId,
-          paymentMethod: quickForm.paymentMethod,
-          author: userPrefs.activeAuthor || 'el',
-          note: quickForm.note.trim() || 'Registro rápido',
-          reconciled: false,
-          createdAt: nowISO,
-          updatedAt: nowISO
-        });
+        appState.transactions.push(baseTx);
       } else {
-        // Ajuste exacto de residuo en la 1ª cuota para que $100.000 en 3 cuotas sume exactamente $100.000
-        const baseInstallment = Math.floor(amountNum / totalInstallments);
-        const remainder = amountNum - baseInstallment * totalInstallments;
-        for (let i = 0; i < totalInstallments; i++) {
-          const cuotaDate = addMonthsToISO(baseDate, i);
-          const cuotaAmt = i === 0 ? baseInstallment + remainder : baseInstallment;
-          appState.transactions.push({
-            id: `tx_${Date.now()}_c${i + 1}`,
-            date: cuotaDate,
-            type: 'expense',
-            amount: cuotaAmt,
-            categoryId: quickForm.categoryId,
-            paymentMethod: quickForm.paymentMethod,
-            author: userPrefs.activeAuthor || 'el',
-            note: `${quickForm.note.trim() || 'Compra en cuotas'} (Cuota ${i + 1}/${totalInstallments})`,
-            reconciled: false,
-            createdAt: nowISO,
-            updatedAt: nowISO
-          });
-        }
+        const installmentTxs = buildInstallmentTransactions(baseTx, totalInstallments);
+        installmentTxs.forEach((instTx) => appState.transactions.push(instTx));
       }
 
+      const cuotaMonto = Math.round(amountNum / totalInstallments);
       saveState(appState);
       quickForm.amount = '';
       quickForm.note = '';
+      quickForm.naturalInputText = '';
       quickForm.installments = 1;
       showToast(
         totalInstallments > 1
-          ? `✅ Guardado en ${totalInstallments} cuotas mensuales`
+          ? `✅ Compra en ${totalInstallments} cuotas de ${formatCLP(cuotaMonto)}/mes guardada (Cuota 1 en este mes)`
           : `✅ Guardado: ${formatCLP(amountNum)}`,
         'success'
       );
@@ -2710,6 +3022,34 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
+  if (action === 'apply-smart-natural-input') {
+    applySmartNaturalInput();
+    return;
+  }
+
+  if (action === 'apply-author-preset') {
+    const cat = btn.dataset.cat;
+    const pm = btn.dataset.pm;
+    const note = btn.dataset.note;
+    if (cat) quickForm.categoryId = cat;
+    if (pm) {
+      quickForm.paymentMethod = pm;
+      if (pm !== 'cmr_falabella') quickForm.installments = 1;
+    }
+    if (note) quickForm.note = note;
+    renderApp();
+    const amtEl = document.getElementById('quick-amount-input');
+    if (amtEl) amtEl.focus();
+    showToast(`⚡ Atajo listo: ${note || 'Gasto frecuente'} — solo ingresa el monto`, 'success');
+    return;
+  }
+
+  if (action === 'set-quick-installments') {
+    quickForm.installments = Math.max(1, Number(btn.dataset.installments || 1));
+    renderApp();
+    return;
+  }
+
   if (action === 'quick-add-amount') {
     const val = btn.dataset.val;
     if (val === 'clear') {
@@ -2736,6 +3076,9 @@ document.addEventListener('click', async (e) => {
 
   if (action === 'select-quick-pm') {
     quickForm.paymentMethod = btn.dataset.pm;
+    if (btn.dataset.pm !== 'cmr_falabella') {
+      quickForm.installments = 1;
+    }
     userPrefs.defaultPaymentMethod = btn.dataset.pm;
     saveUserPrefs(userPrefs);
     renderApp();
@@ -2799,12 +3142,18 @@ document.addEventListener('click', async (e) => {
       showToast('Ingresa montos mayores a $0 en el desglose', 'error');
       return;
     }
-    const groupId = `rcpt_${Date.now()}`;
+    const groupId = `split_${Date.now()}`;
+    const splitsSum = validSplits.reduce((acc, s) => acc + Number(s.amount || 0), 0);
+    const splitTotalAmount = Number(splitForm.totalAmount || 0) > 0 ? Number(splitForm.totalAmount) : splitsSum;
     const nowISO = new Date().toISOString();
+
     validSplits.forEach((s) => {
       appState.transactions.push({
         id: `tx_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        splitGroupId: groupId,
         receiptGroupId: groupId,
+        splitTotalAmount,
+        merchant: splitForm.merchant || 'Boleta dividida',
         date: splitForm.date || getTodayISO(),
         type: 'expense',
         amount: Number(s.amount),
@@ -2819,7 +3168,7 @@ document.addEventListener('click', async (e) => {
     });
 
     saveState(appState);
-    showToast(`✅ Boleta dividida guardada en ${validSplits.length} categorías`, 'success');
+    showToast(`✅ Boleta dividida (${formatCLP(splitTotalAmount)}) guardada en ${validSplits.length} categorías`, 'success');
     registerMode = 'quick';
     renderApp();
     return;
@@ -2829,7 +3178,7 @@ document.addEventListener('click', async (e) => {
     const amt = cleanChileanAmount(document.getElementById('wife-transfer-amount')?.value);
     const fromPm = document.getElementById('wife-transfer-from')?.value || 'bch_ctacte';
     if (amt <= 0) {
-      showToast('Ingresa el monto transferido a Marie', 'error');
+      showToast('Ingresa el monto a recargar en el Fondo Familiar de Marie', 'error');
       return;
     }
     const nowISO = new Date().toISOString();
@@ -2841,13 +3190,39 @@ document.addEventListener('click', async (e) => {
       categoryId: 'traspaso_interno',
       paymentMethod: fromPm,
       author: 'el',
-      note: 'Transferencia a cuenta de Marie (Traspaso interno familiar)',
+      note: 'Recarga a 💖 Fondo Familiar de Marie (Traspaso interno familiar)',
       reconciled: true,
       createdAt: nowISO,
       updatedAt: nowISO
     });
     saveState(appState);
-    showToast(`👩🏻 Traspaso de ${formatCLP(amt)} a Marie registrado`, 'success');
+    showToast(`💖 Recarga de ${formatCLP(amt)} al Fondo Familiar de Marie registrada`, 'success');
+    renderApp();
+    return;
+  }
+
+  if (action === 'send-couple-whatsapp') {
+    const kind = btn.dataset.msgKind || 'weeklyTeamSummary';
+    const metrics = getMonthMetrics(activeYearMonth);
+    const msgs = metrics.coupleWhatsApp || buildCoupleWhatsAppMessages(metrics, appState, activeYearMonth);
+    const chosen = msgs?.[kind] || msgs?.weeklyTeamSummary;
+    const url = chosen?.url || chosen?.waUrl;
+    if (url) {
+      window.open(url, '_blank');
+    } else if (chosen?.text) {
+      window.open(`https://wa.me/?text=${encodeURIComponent(chosen.text)}`, '_blank');
+    }
+    return;
+  }
+
+  if (action === 'clone-prev-budget') {
+    const res = clonePreviousMonthBudget(appState, activeYearMonth);
+    saveState(appState);
+    if (res && res.clonedFrom) {
+      showToast(`📋 Presupuesto copiado desde ${formatMonthLabel(res.clonedFrom)}`, 'success');
+    } else {
+      showToast('📋 Presupuesto base aplicado para este mes', 'success');
+    }
     renderApp();
     return;
   }
@@ -3106,11 +3481,22 @@ document.addEventListener('click', async (e) => {
       if (row.status === 'matched_duplicate' && row.matchedTx) {
         const target = appState.transactions.find((t) => t.id === row.matchedTx.id);
         if (target) {
-          target.reconciled = true;
-          target.bankFingerprint = row.fingerprint;
-          target.updatedAt = nowISO;
-          if (target.type === 'expense' && !target.receiptGroupId) {
-            target.amount = row.amount;
+          const grpId = target.splitGroupId || target.receiptGroupId;
+          if (grpId) {
+            appState.transactions.forEach((t) => {
+              if ((t.splitGroupId || t.receiptGroupId) === grpId) {
+                t.reconciled = true;
+                t.bankFingerprint = row.fingerprint;
+                t.updatedAt = nowISO;
+              }
+            });
+          } else {
+            target.reconciled = true;
+            target.bankFingerprint = row.fingerprint;
+            target.updatedAt = nowISO;
+            if (target.type === 'expense') {
+              target.amount = row.amount;
+            }
           }
           verifiedCount++;
         }

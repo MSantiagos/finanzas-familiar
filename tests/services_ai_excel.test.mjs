@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import vm from 'node:vm';
+import { fileURLToPath } from 'node:url';
 
 import {
   getDemoScannedReceipt,
@@ -16,6 +20,7 @@ import {
   buildExcelWorkbookData,
   exportStateToExcel,
   extractLoanContactName,
+  formatInstallmentBadge,
   TX_TYPE_LABELS
 } from '../src/services/excelExport.js';
 
@@ -398,4 +403,153 @@ test('buildExcelWorkbookData y exportStateToExcel generan 4 hojas, descuentan re
   }
 
   assert.equal(extractLoanContactName('TRASPASO DE: CARLOS MUÑOZ — Vaca asado'), 'Carlos Muñoz');
+});
+
+test('Excel y Google Sheets aplican lenguaje cálido de pareja (sin "rendir") y formatean compras en cuotas CMR (Cuota 1/6)', () => {
+  assert.equal(formatInstallmentBadge({ installmentNumber: 1, installmentsTotal: 6 }), 'Cuota 1/6');
+  assert.equal(formatInstallmentBadge({ installmentsTotal: 1 }), '');
+  assert.equal(formatInstallmentBadge({}), '');
+
+  const stateWithInstallments = {
+    familyConfig: {
+      husbandName: 'Mauricio',
+      wifeName: 'Marie',
+      monthlyIncomeTarget: 2350000,
+      monthlySavingsGoal: 250000
+    },
+    categories: DEFAULT_CATEGORIES,
+    fixedTemplates: DEFAULT_FIXED_TEMPLATE,
+    monthlyBudgets: {
+      '2026-10': {
+        incomeTarget: 2350000,
+        savingsGoal: 250000,
+        categories: {}
+      }
+    },
+    transactions: [
+      {
+        id: 'tx_cmr_cuotas_1',
+        date: '2026-10-11',
+        type: 'expense',
+        categoryId: 'hija',
+        amount: 35000,
+        paymentMethod: 'cmr_falabella',
+        author: 'el',
+        note: 'Coche paseo bebé',
+        installmentNumber: 1,
+        installmentsTotal: 6,
+        reconciled: true
+      },
+      {
+        id: 'tx_wife_trf_warm',
+        date: '2026-10-12',
+        type: 'transfer_wife',
+        amount: 180000,
+        paymentMethod: 'bch_ctacte',
+        author: 'el',
+        note: 'Aporte quincenal Marie',
+        reconciled: true
+      },
+      {
+        id: 'tx_wife_exp_warm',
+        date: '2026-10-13',
+        type: 'expense',
+        categoryId: 'supermercado',
+        amount: 55000,
+        paymentMethod: 'cuenta_mujer',
+        author: 'ella',
+        note: 'Feria y frutas',
+        reconciled: false
+      }
+    ]
+  };
+
+  const wb = buildExcelWorkbookData(stateWithInstallments, '2026-10');
+
+  const resumenText = JSON.stringify(wb.sheets.Resumen_Presupuesto.rows);
+  const movText = JSON.stringify(wb.sheets['Movimientos_2026-10'].rows);
+  const escudoText = JSON.stringify(wb.sheets.Escudo_CMR_y_Prestamos.rows);
+
+  // 1. Verificar lenguaje cálido colaborativo y ausencia total de "rendir" en Excel
+  assert.match(resumenText, /Fondo Familiar Disponible en Cuenta de Marie/);
+  assert.match(resumenText, /Compras Familiares desde Cuenta de Marie/);
+  assert.match(escudoText, /Fondo Familiar Disponible en Cuenta de Marie/);
+  assert.match(escudoText, /Compras Familiares desde Cuenta de Marie/);
+  assert.doesNotMatch(resumenText, /rendir/i);
+  assert.doesNotMatch(escudoText, /rendir/i);
+
+  // 2. Verificar indicador claro "Cuota 1/6" en Movimientos_2026-10 y en Escudo_CMR_y_Prestamos
+  const cuotaMovRow = wb.sheets['Movimientos_2026-10'].rows.find((r) =>
+    String(r[3] || '').includes('Coche paseo bebé')
+  );
+  assert.ok(cuotaMovRow, 'Debe existir la fila de compra en cuotas en Movimientos_2026-10');
+  assert.ok(
+    String(cuotaMovRow[1]).includes('Cuota 1/6') || String(cuotaMovRow[3]).includes('Cuota 1/6'),
+    'Movimientos_2026-10 debe mostrar Cuota 1/6 en columna de tipo o detalle'
+  );
+  assert.match(escudoText, /Cuota 1\/6/);
+
+  // 3. Verificar también google-sheets-sync/Code.gs en sandbox
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const codeGsPath = path.resolve(__dirname, '../google-sheets-sync/Code.gs');
+  const codeGsSource = fs.readFileSync(codeGsPath, 'utf8');
+
+  const sheetsStore = {};
+  function createMockSheet(name) {
+    const sheet = {
+      name,
+      lastRangeValues: null,
+      clearContents() {
+        this.lastRangeValues = null;
+      },
+      getRange() {
+        const rangeObj = {
+          getValue: () => '',
+          setValues: (vals) => {
+            sheet.lastRangeValues = vals;
+            return rangeObj;
+          },
+          setFontWeight: () => rangeObj,
+          setBackground: () => rangeObj,
+          setFontColor: () => rangeObj
+        };
+        return rangeObj;
+      }
+    };
+    return sheet;
+  }
+
+  const mockSpreadsheet = {
+    getSheetByName: (n) => sheetsStore[n] || null,
+    insertSheet: (n) => {
+      sheetsStore[n] = createMockSheet(n);
+      return sheetsStore[n];
+    }
+  };
+
+  const sandbox = {
+    Object,
+    Array,
+    String,
+    Number,
+    Boolean,
+    Math,
+    Date,
+    JSON,
+    isFinite,
+    SpreadsheetApp: { getActiveSpreadsheet: () => mockSpreadsheet }
+  };
+
+  vm.createContext(sandbox);
+  vm.runInContext(codeGsSource, sandbox);
+  sandbox.updateReadableSheets_(mockSpreadsheet, stateWithInstallments);
+
+  const gsEscudoText = JSON.stringify(sheetsStore['Escudo_CMR_y_Mujer'].lastRangeValues);
+  const gsMovText = JSON.stringify(sheetsStore['Movimientos'].lastRangeValues);
+
+  assert.match(gsEscudoText, /Fondo Familiar Disponible en Cuenta de Marie/);
+  assert.match(gsEscudoText, /Compras Familiares Registradas por Marie/);
+  assert.doesNotMatch(gsEscudoText, /rendir/i);
+  assert.match(gsEscudoText, /Cuota 1\/6/);
+  assert.match(gsMovText, /Cuota 1\/6/);
 });

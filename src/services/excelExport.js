@@ -4,7 +4,7 @@ export const TX_TYPE_LABELS = {
   expense: 'Gasto',
   income: 'Ingreso',
   reimbursement: 'Reembolso / Devolución',
-  transfer_wife: 'Traspaso Interno a Mujer',
+  transfer_wife: 'Aporte a Fondo Familiar de Marie',
   cmr_payment: 'Pago Facturación CMR',
   loan_received: 'Préstamo Recibido (Por devolver)',
   loan_repaid: 'Devolución de Préstamo Pagada',
@@ -12,6 +12,19 @@ export const TX_TYPE_LABELS = {
   loan_collected: 'Préstamo / Cuenta Cobrada',
   savings_withdrawal: 'Rescate desde Ahorros'
 };
+
+/**
+ * Formatea el indicador de cuotas cuando una compra tiene más de 1 cuota (ej. "Cuota 1/6").
+ */
+export function formatInstallmentBadge(tx) {
+  const total = Math.round(Number(tx?.installmentsTotal || tx?.installments || 1));
+  if (!Number.isFinite(total) || total <= 1) return '';
+  const current = Math.max(
+    1,
+    Math.min(total, Math.round(Number(tx?.installmentNumber || tx?.installmentCurrent || 1)))
+  );
+  return `Cuota ${current}/${total}`;
+}
 
 /**
  * Extrae el nombre limpio de la persona o contacto desde un movimiento de préstamo.
@@ -275,19 +288,19 @@ export function buildExcelWorkbookData(state = {}, activeYearMonth = '2026-10') 
       'Dinero que DEBES retener en Banco de Chile para pagar la facturación'
     ],
     [
-      'Transferido a Mi Mujer (Traspaso Interno)',
+      'Aportes al Fondo Familiar de Marie (Traspaso Interno)',
       transferredToWife,
-      'Plata pasada a su cuenta (NO se suma como gasto hasta que se compra algo)'
+      'Fondos compartidos transferidos a su cuenta (NO se suman como gasto hasta que se compra algo)'
     ],
     [
-      'Gastado desde Cuenta Mi Mujer',
+      'Compras Familiares desde Cuenta de Marie',
       spentByWifeAccount,
-      'Compras reales ya registradas con la cuenta de ella'
+      'Compras familiares reales ya registradas desde la cuenta de Marie'
     ],
     [
-      'Saldo Estimado por Rendir/Usar en Cuenta Mujer',
+      'Fondo Familiar Disponible en Cuenta de Marie',
       wifeBalanceThisMonth,
-      'Diferencia entre lo transferido a ella y lo ya registrado'
+      'Fondo familiar disponible en la cuenta de Marie para próximas compras del hogar'
     ],
     [],
     [
@@ -333,7 +346,9 @@ export function buildExcelWorkbookData(state = {}, activeYearMonth = '2026-10') 
     .slice()
     .sort((a, b) => String(b.date).localeCompare(String(a.date)))
     .forEach((tx) => {
-      const tipoLabel = TX_TYPE_LABELS[tx.type] || String(tx.type || 'Movimiento');
+      const baseTipoLabel = TX_TYPE_LABELS[tx.type] || String(tx.type || 'Movimiento');
+      const installmentBadge = formatInstallmentBadge(tx);
+      const tipoLabel = installmentBadge ? `${baseTipoLabel} (${installmentBadge})` : baseTipoLabel;
       const catObj = categoriesMap[tx.categoryId];
       let catLabel = '🔄 Movimiento Interno';
       if (catObj) {
@@ -348,6 +363,14 @@ export function buildExcelWorkbookData(state = {}, activeYearMonth = '2026-10') 
         catLabel = '🤝 Libro de Préstamos';
       }
 
+      const rawNote = String(tx.note || '').trim();
+      const noteWithInstallment =
+        installmentBadge && !rawNote.toLowerCase().includes(installmentBadge.toLowerCase())
+          ? rawNote
+            ? `${rawNote} (${installmentBadge})`
+            : installmentBadge
+          : rawNote;
+
       const authorLabel =
         tx.author === 'ella'
           ? state.familyConfig?.wifeName || 'Ella'
@@ -357,7 +380,7 @@ export function buildExcelWorkbookData(state = {}, activeYearMonth = '2026-10') 
         tx.date,
         tipoLabel,
         catLabel,
-        tx.note || '',
+        noteWithInstallment,
         Number(tx.amount || 0),
         paymentMap[tx.paymentMethod] || tx.paymentMethod || 'Banco / Interno',
         authorLabel,
@@ -436,8 +459,32 @@ export function buildExcelWorkbookData(state = {}, activeYearMonth = '2026-10') 
     }
   );
 
+  const cmrMonthPurchases = monthTxs.filter(
+    (tx) => tx.type === 'expense' && tx.paymentMethod === 'cmr_falabella'
+  );
+  const cmrInstallmentSummaries = cmrMonthPurchases
+    .map((tx) => {
+      const badge = formatInstallmentBadge(tx);
+      if (!badge) return null;
+      const label = String(tx.note || 'Compra CMR').trim();
+      return `${label} (${badge})`;
+    })
+    .filter(Boolean);
+
+  const cmrPurchaseDetailRows = cmrMonthPurchases.map((tx) => {
+    const badge = formatInstallmentBadge(tx);
+    const baseNote = String(tx.note || 'Compra CMR Falabella').trim();
+    const rowTitle = badge
+      ? `↳ Compra CMR (${tx.date}): ${baseNote} — ${badge}`
+      : `↳ Compra CMR (${tx.date}): ${baseNote}`;
+    const rowDiag = badge
+      ? `${badge} activa en el mes (incluida en Escudo CMR)`
+      : 'Compra al contado (1 cuota) incluida en Escudo CMR';
+    return [rowTitle, Math.max(0, Math.round(Number(tx.amount || 0))), rowDiag];
+  });
+
   const shieldAndLoansRows = [
-    ['REPORTE EJECUTIVO: ESCUDO CMR, CUENTA MUJER Y LIBRO DE PRÉSTAMOS', activeYearMonth],
+    ['REPORTE EJECUTIVO: ESCUDO CMR, FONDO FAMILIAR DE MARIE Y LIBRO DE PRÉSTAMOS', activeYearMonth],
     [],
     ['SECCIÓN 1: DETALLE DEL ESCUDO CMR FALABELLA', 'MONTO (CLP)', 'DIAGNÓSTICO / ACCIÓN'],
     [
@@ -448,8 +495,11 @@ export function buildExcelWorkbookData(state = {}, activeYearMonth = '2026-10') 
     [
       'Compras con CMR Falabella del Mes (' + activeYearMonth + ')',
       cmrSpentThisMonth,
-      'Total cargado a la tarjeta de crédito CMR en el mes actual'
+      cmrInstallmentSummaries.length > 0
+        ? `Total cargado a CMR en el mes — Incluye cuotas: ${cmrInstallmentSummaries.join(', ')}`
+        : 'Total cargado a la tarjeta de crédito CMR en el mes actual'
     ],
+    ...cmrPurchaseDetailRows,
     [
       'Abonos / Pagos a CMR Realizados en el Mes',
       cmrPaidThisMonth,
@@ -463,31 +513,31 @@ export function buildExcelWorkbookData(state = {}, activeYearMonth = '2026-10') 
         : 'Escudo CMR 100% pagado y al día ($0 deuda pendiente)'
     ],
     [],
-    ['SECCIÓN 2: CARTOLA INTERNA CUENTA MUJER', 'MONTO (CLP)', 'DETALLE OPERATIVO'],
+    ['SECCIÓN 2: FONDO FAMILIAR EN CUENTA DE MARIE', 'MONTO (CLP)', 'DETALLE EN EQUIPO'],
     [
-      'Saldo Acumulado Previo Cuenta Mujer',
+      'Fondo Familiar Acumulado Previo en Cuenta de Marie',
       wifeCarryoverPrev,
-      'Remanente de meses anteriores en la cuenta de Marie'
+      'Remanente de meses anteriores disponible en la cuenta de Marie'
     ],
     [
-      'Transferencias Enviadas por Mauricio en el Mes',
+      'Transferencias Enviadas por Mauricio al Fondo Familiar en el Mes',
       transferredToWife,
-      'Traspasos internos desde Banco de Chile (no duplican gasto)'
+      'Traspasos internos desde Banco de Chile al fondo familiar (no duplican gasto)'
     ],
     [
-      'Compras Registradas por Marie en el Mes',
+      'Compras Familiares desde Cuenta de Marie',
       spentByWifeAccount,
-      'Gastos reales pagados con Cuenta Mujer e imputados a categorías'
+      'Compras familiares reales pagadas desde la cuenta de Marie e imputadas a categorías'
     ],
     [
-      'Saldo Disponible por Rendir en el Mes',
+      'Fondo Familiar Disponible en Cuenta de Marie',
       wifeBalanceThisMonth,
-      'Diferencia del mes (Transferencias de Mauricio - Compras de Marie)'
+      'Diferencia del mes (Transferencias de Mauricio - Compras familiares de Marie)'
     ],
     [
-      'Saldo Disponible Acumulado Total en Cuenta Mujer',
+      'Fondo Familiar Disponible Acumulado en Cuenta de Marie',
       wifeBalanceCumulative,
-      'Fondos totales disponibles en Cuenta Mujer por usar o rendir'
+      'Fondos familiares totales disponibles en la cuenta de Marie para compras del hogar'
     ],
     [],
     [

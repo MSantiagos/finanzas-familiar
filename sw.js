@@ -1,4 +1,4 @@
-const CACHE_NAME = 'finanzas-familiar-v10';
+const CACHE_NAME = 'finanzas-familiar-v11';
 const ASSETS = [
   './',
   './index.html',
@@ -10,7 +10,8 @@ const ASSETS = [
   './src/services/storage.js',
   './src/services/reconciler.js',
   './src/services/geminiScanner.js',
-  './src/services/excelExport.js'
+  './src/services/excelExport.js',
+  './src/services/smartInput.js'
 ];
 
 self.addEventListener('install', (event) => {

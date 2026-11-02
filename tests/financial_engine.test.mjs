@@ -11,7 +11,11 @@ import {
   resolveCalendarProgress,
   normalizeLoanContactKey,
   extractLoanContactDisplayName,
-  formatCLPAmount
+  formatCLPAmount,
+  detectAntExpensesAndSubscriptions,
+  calculateMultiMonthComparison,
+  clonePreviousMonthBudget,
+  buildCoupleWhatsAppMessages
 } from '../src/domain/financialEngine.js';
 
 function createBaseTestState(ym = '2026-10') {
@@ -533,4 +537,241 @@ test('26. Utilitarios de calendario, contactos y formato CLP operan con precisi�
   assert.equal(extractLoanContactDisplayName('TEF A: MARÍA JOSÉ SOTO — Regalo'), 'María José Soto');
   assert.equal(formatCLPAmount(1250000), '$1.250.000');
   assert.equal(formatCLPAmount(-45000), '-$45.000');
+});
+
+// ============================================================================
+// 6. PRUEBAS DE GASTOS HORMIGA Y SUSCRIPCIONES (detectAntExpensesAndSubscriptions)
+// ============================================================================
+
+test('27. detectAntExpensesAndSubscriptions identifica gastos hormiga (<= $15.000), proyección anual y topMerchants', () => {
+  const txs = [
+    { id: 'a1', date: '2026-10-03', type: 'expense', amount: 4800, categoryId: 'delivery_salidas', note: 'Starbucks Latte' },
+    { id: 'a2', date: '2026-10-07', type: 'expense', amount: 5200, categoryId: 'delivery_salidas', note: 'Starbucks Croissant' },
+    { id: 'a3', date: '2026-10-10', type: 'expense', amount: 6500, categoryId: 'transporte', note: 'Uber viaje oficina' },
+    { id: 'a4', date: '2026-10-12', type: 'expense', amount: 3500, categoryId: 'gustos_personales', note: 'Oxxo bebida y snack' },
+    // Gasto grande de supermercado (NO es gasto hormiga)
+    { id: 'big1', date: '2026-10-15', type: 'expense', amount: 80000, categoryId: 'supermercado', note: 'Líder compra mensual' }
+  ];
+
+  const report = detectAntExpensesAndSubscriptions(txs, '2026-10');
+  assert.equal(report.antExpenses.count, 4);
+  assert.equal(report.antExpenses.totalAmount, 20000);
+  assert.equal(report.antExpenses.annualizedProjection, 240000);
+  assert.equal(report.antExpenses.percentOfTotalSpend, 20); // 20.000 de 100.000 total
+  assert.equal(report.antExpenses.topMerchants[0].name, 'Starbucks');
+  assert.equal(report.antExpenses.topMerchants[0].count, 2);
+  assert.equal(report.antExpenses.topMerchants[0].totalAmount, 10000);
+});
+
+test('28. detectAntExpensesAndSubscriptions detecta micro-compras repetidas (<= $12.000) en un mismo comercio', () => {
+  const txs = [
+    { id: 'm1', date: '2026-10-04', type: 'expense', amount: 7500, categoryId: 'hogar_varios', note: 'Ferretería El Martillo' },
+    { id: 'm2', date: '2026-10-18', type: 'expense', amount: 8500, categoryId: 'hogar_varios', note: 'Ferretería El Martillo' },
+    { id: 'm3', date: '2026-10-20', type: 'expense', amount: 9000, categoryId: 'hogar_varios', note: 'Compra única Bazar' }
+  ];
+
+  const report = detectAntExpensesAndSubscriptions(txs, '2026-10');
+  assert.equal(report.antExpenses.count, 2);
+  assert.equal(report.antExpenses.totalAmount, 16000);
+  assert.equal(report.antExpenses.topMerchants.length, 1);
+  assert.equal(report.antExpenses.topMerchants[0].count, 2);
+});
+
+test('29. detectAntExpensesAndSubscriptions detecta suscripciones digitales y calcula proyección anual sin mezclarlas con hormiga', () => {
+  const txs = [
+    { id: 's1', date: '2026-10-02', type: 'expense', amount: 10990, categoryId: 'gustos_personales', note: 'Netflix.com' },
+    { id: 's2', date: '2026-10-05', type: 'expense', amount: 6550, categoryId: 'gustos_personales', note: 'Spotify Duo' },
+    { id: 's3', date: '2026-10-09', type: 'expense', amount: 3490, categoryId: 'vivienda_fijos', note: 'APPLE.COM/BILL iCloud' },
+    { id: 's4', date: '2026-10-12', type: 'expense', amount: 18900, categoryId: 'gustos_personales', note: 'OpenAI ChatGPT Plus' }
+  ];
+
+  const report = detectAntExpensesAndSubscriptions(txs, '2026-10');
+  assert.equal(report.subscriptions.items.length, 4);
+  assert.equal(report.subscriptions.totalMonthlySubscriptions, 39930);
+  assert.equal(report.subscriptions.annualizedSubscriptions, 39930 * 12);
+  assert.equal(report.subscriptions.duplicateAlerts.length, 0);
+  // Ninguna suscripción debe contaminar la bolsa de gastos hormiga
+  assert.equal(report.antExpenses.count, 0);
+});
+
+test('30. detectAntExpensesAndSubscriptions alerta posibles cobros duplicados de suscripciones en el mismo mes', () => {
+  const txs = [
+    { id: 'd1', date: '2026-10-03', type: 'expense', amount: 10990, categoryId: 'gustos_personales', note: 'Cargo Netflix.com' },
+    { id: 'd2', date: '2026-10-19', type: 'expense', amount: 10990, categoryId: 'gustos_personales', note: 'NETFLIX tarjeta CMR' },
+    { id: 'd3', date: '2026-10-08', type: 'expense', amount: 7500, categoryId: 'gustos_personales', note: 'Disney Plus' }
+  ];
+
+  const report = detectAntExpensesAndSubscriptions(txs, '2026-10');
+  assert.equal(report.subscriptions.duplicateAlerts.length, 1);
+  assert.equal(report.subscriptions.duplicateAlerts[0].name, 'Netflix');
+  assert.equal(report.subscriptions.duplicateAlerts[0].count, 2);
+  assert.equal(report.subscriptions.duplicateAlerts[0].totalAmount, 21980);
+});
+
+test('31. detectAntExpensesAndSubscriptions filtra estrictamente por activeYearMonth y maneja listas vacías', () => {
+  const txs = [
+    { id: 'sep1', date: '2026-09-15', type: 'expense', amount: 4500, categoryId: 'delivery_salidas', note: 'Starbucks' },
+    { id: 'oct1', date: '2026-10-15', type: 'expense', amount: 3900, categoryId: 'delivery_salidas', note: 'Starbucks' }
+  ];
+
+  const octReport = detectAntExpensesAndSubscriptions(txs, '2026-10');
+  assert.equal(octReport.antExpenses.count, 1);
+  assert.equal(octReport.antExpenses.totalAmount, 3900);
+
+  const emptyReport = detectAntExpensesAndSubscriptions([], '2026-10');
+  assert.equal(emptyReport.antExpenses.count, 0);
+  assert.equal(emptyReport.antExpenses.percentOfTotalSpend, 0);
+  assert.equal(emptyReport.subscriptions.totalMonthlySubscriptions, 0);
+});
+
+// ============================================================================
+// 7. PRUEBAS DE COMPARATIVA MULTI-MES (calculateMultiMonthComparison)
+// ============================================================================
+
+test('32. calculateMultiMonthComparison calcula deltas vs mes anterior y serie histórica de 6 meses', () => {
+  const state = createBaseTestState('2026-10');
+  state.transactions.push(
+    // Septiembre 2026: gasto neto $1.000.000 (CMR $400.000)
+    { id: 'sep_i', date: '2026-09-01', type: 'income', amount: 2350000, paymentMethod: 'bch_ctacte' },
+    { id: 'sep_e1', date: '2026-09-05', type: 'expense', amount: 600000, categoryId: 'vivienda_fijos', paymentMethod: 'bch_ctacte' },
+    { id: 'sep_e2', date: '2026-09-12', type: 'expense', amount: 400000, categoryId: 'supermercado', paymentMethod: 'cmr_falabella' },
+    // Octubre 2026: gasto neto $1.250.000 (CMR $500.000) -> +$250.000 (+25%)
+    { id: 'oct_i', date: '2026-10-01', type: 'income', amount: 2350000, paymentMethod: 'bch_ctacte' },
+    { id: 'oct_e1', date: '2026-10-05', type: 'expense', amount: 750000, categoryId: 'vivienda_fijos', paymentMethod: 'bch_ctacte' },
+    { id: 'oct_e2', date: '2026-10-14', type: 'expense', amount: 500000, categoryId: 'supermercado', paymentMethod: 'cmr_falabella' }
+  );
+
+  const comp = calculateMultiMonthComparison(state, '2026-10', 6);
+  assert.equal(comp.currentMonth.yearMonth, '2026-10');
+  assert.equal(comp.currentMonth.netExpense, 1250000);
+  assert.equal(comp.currentMonth.savingsAchieved, 1100000);
+  assert.equal(comp.previousMonth.yearMonth, '2026-09');
+  assert.equal(comp.previousMonth.netExpense, 1000000);
+  assert.equal(comp.previousMonth.hasData, true);
+  assert.equal(comp.deltaExpense, 250000);
+  assert.equal(comp.deltaExpensePct, 25);
+  assert.equal(comp.historySeries.length, 6);
+  assert.equal(comp.historySeries[0].yearMonth, '2026-05');
+  assert.equal(comp.historySeries[5].yearMonth, '2026-10');
+});
+
+test('33. calculateMultiMonthComparison ordena categoryDeltas por mayor incremento de gasto', () => {
+  const state = createBaseTestState('2026-10');
+  state.transactions.push(
+    { id: 's1', date: '2026-09-10', type: 'expense', amount: 200000, categoryId: 'supermercado' },
+    { id: 's2', date: '2026-09-12', type: 'expense', amount: 50000, categoryId: 'delivery_salidas' },
+    // En octubre supermercado sube +$40.000 y delivery sube +$70.000
+    { id: 'o1', date: '2026-10-10', type: 'expense', amount: 240000, categoryId: 'supermercado' },
+    { id: 'o2', date: '2026-10-12', type: 'expense', amount: 120000, categoryId: 'delivery_salidas' }
+  );
+
+  const comp = calculateMultiMonthComparison(state, '2026-10', 6);
+  assert.equal(comp.categoryDeltas[0].categoryId, 'delivery_salidas');
+  assert.equal(comp.categoryDeltas[0].deltaAmount, 70000);
+  assert.equal(comp.categoryDeltas[0].deltaPct, 140);
+  assert.equal(comp.categoryDeltas[1].categoryId, 'supermercado');
+  assert.equal(comp.categoryDeltas[1].deltaAmount, 40000);
+});
+
+test('34. calculateMultiMonthComparison maneja cruces de año (enero -> diciembre previo) y previousMonth sin datos', () => {
+  const state = createBaseTestState('2026-01');
+  state.transactions.push({
+    id: 'jan1',
+    date: '2026-01-10',
+    type: 'expense',
+    amount: 300000,
+    categoryId: 'supermercado'
+  });
+
+  const comp = calculateMultiMonthComparison(state, '2026-01', 4);
+  assert.equal(comp.previousMonth.yearMonth, '2025-12');
+  assert.equal(comp.previousMonth.hasData, false);
+  assert.equal(comp.previousMonth.netExpense, 0);
+  assert.equal(comp.deltaExpense, 300000);
+  assert.deepEqual(
+    comp.historySeries.map((h) => h.yearMonth),
+    ['2025-10', '2025-11', '2025-12', '2026-01']
+  );
+});
+
+// ============================================================================
+// 8. PRUEBAS DE CLONACIÓN DE PRESUPUESTO (clonePreviousMonthBudget)
+// ============================================================================
+
+test('35. clonePreviousMonthBudget copia el presupuesto del mes anterior inmediato y registra updatedAt', () => {
+  const state = createBaseTestState('2026-10');
+  state.monthlyBudgets['2026-10'].incomeTarget = 2500000;
+  state.monthlyBudgets['2026-10'].savingsGoal = 350000;
+  state.monthlyBudgets['2026-10'].categories.supermercado = 460000;
+
+  const result = clonePreviousMonthBudget(state, '2026-11');
+  assert.equal(result.clonedFrom, '2026-10');
+  assert.equal(result.budgetConfig.incomeTarget, 2500000);
+  assert.equal(result.budgetConfig.savingsGoal, 350000);
+  assert.equal(result.budgetConfig.categories.supermercado, 460000);
+  assert.ok(Boolean(result.budgetConfig.updatedAt));
+  assert.deepEqual(state.monthlyBudgets['2026-11'], result.budgetConfig);
+});
+
+test('36. clonePreviousMonthBudget busca el mes configurado más reciente o usa DEFAULT_CATEGORIES si no hay previos', () => {
+  const state = createBaseTestState('2026-08');
+  state.monthlyBudgets['2026-08'].savingsGoal = 310000;
+
+  // Salto de 2026-08 a 2026-11 (sin 09 ni 10)
+  const fromAug = clonePreviousMonthBudget(state, '2026-11');
+  assert.equal(fromAug.clonedFrom, '2026-08');
+  assert.equal(fromAug.budgetConfig.savingsGoal, 310000);
+
+  // Mes anterior a cualquier presupuesto existente (2026-05) -> usa DEFAULT_CATEGORIES
+  const fromDefault = clonePreviousMonthBudget(state, '2026-05');
+  assert.equal(fromDefault.clonedFrom, 'DEFAULT_CATEGORIES');
+  assert.equal(fromDefault.budgetConfig.incomeTarget, 2350000);
+  assert.equal(fromDefault.budgetConfig.categories.supermercado, 420000);
+});
+
+// ============================================================================
+// 9. PRUEBAS DE MENSAJES DE EQUIPO EN PAREJA Y TONO CÁLIDO (WhatsApp & Diagnosis)
+// ============================================================================
+
+test('37. buildCoupleWhatsAppMessages genera los 3 mensajes empáticos de equipo y sus URLs wa.me para iPhone', () => {
+  const state = createBaseTestState('2026-10');
+  state.transactions.push(
+    { id: 't1', date: '2026-10-02', type: 'transfer_wife', amount: 200000, paymentMethod: 'bch_ctacte' },
+    { id: 't2', date: '2026-10-08', type: 'expense', amount: 185000, categoryId: 'supermercado', paymentMethod: 'cuenta_mujer' },
+    { id: 't3', date: '2026-10-10', type: 'expense', amount: 150000, categoryId: 'hija', paymentMethod: 'cmr_falabella' }
+  );
+
+  const summary = calculateMonthlyFinancialSummary(state, '2026-10', '2026-10-12');
+  const wa = buildCoupleWhatsAppMessages(summary, state, '2026-10');
+
+  // 1. Solicitud de recarga de Marie a Mauricio ($15.000 disponibles)
+  assert.ok(wa.lowWifeWalletRequest.text.includes('Amor ❤️ me van quedando $15.000 en el Fondo Familiar de mi cuenta'));
+  assert.ok(wa.lowWifeWalletRequest.url.startsWith('https://wa.me/?text='));
+
+  // 2. Confirmación de transferencia de Mauricio a Marie
+  assert.ok(wa.transferConfirmationToMarie.text.includes('Amor ❤️ te acabo de transferir al Fondo Familiar'));
+  assert.ok(wa.transferConfirmationToMarie.text.includes('tienes $15.000 disponibles en tu cuenta'));
+  assert.ok(wa.transferConfirmationToMarie.url.startsWith('https://wa.me/?text='));
+
+  // 3. Resumen Ejecutivo Semanal de Equipo
+  assert.ok(wa.weeklyTeamSummary.text.includes('🛡️ Resumen Familiar (2026-10):'));
+  assert.ok(wa.weeklyTeamSummary.text.includes('• Ahorro del mes: $250.000 protegido'));
+  assert.ok(wa.weeklyTeamSummary.text.includes('• Reserva Escudo CMR: $150.000'));
+  assert.ok(wa.weeklyTeamSummary.text.includes('• Fondo Familiar Marie: $15.000 disponible'));
+  assert.ok(wa.weeklyTeamSummary.text.includes('¡Vamos súper bien equipo! ❤️'));
+  assert.ok(wa.weeklyTeamSummary.url.startsWith('https://wa.me/?text='));
+});
+
+test('38. generateInstantFamilyDiagnosis utiliza lenguaje cálido ("Fondo Familiar en Cuenta de Marie") sin términos fiscalizadores', () => {
+  const state = createBaseTestState('2026-10');
+  state.transactions.push(
+    { id: 'w1', date: '2026-10-02', type: 'transfer_wife', amount: 180000, paymentMethod: 'bch_ctacte' },
+    { id: 'w2', date: '2026-10-06', type: 'expense', amount: 80000, categoryId: 'supermercado', paymentMethod: 'cuenta_mujer' }
+  );
+
+  const summary = calculateMonthlyFinancialSummary(state, '2026-10', '2026-10-10');
+  const diag = generateInstantFamilyDiagnosis(summary);
+
+  assert.ok(diag.wifeAccountDiagnosis.message.includes('Fondo Familiar en Cuenta de Marie'));
+  assert.ok(!diag.wifeAccountDiagnosis.message.toLowerCase().includes('por rendir'));
 });

@@ -2233,6 +2233,291 @@ button,
 }
 
 /* ============================================================================
+   DICTADO / FRASE RÁPIDA (.smart-natural-bar) & ATAJOS POR AUTOR (.author-presets-row)
+   ============================================================================ */
+.smart-natural-bar {
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.08) 0%, rgba(16, 185, 129, 0.08) 100%);
+  border: 1.5px solid rgba(37, 99, 235, 0.3);
+  border-radius: 16px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+.smart-natural-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.smart-natural-badge {
+  background: rgba(37, 99, 235, 0.14);
+  color: var(--primary-accent);
+  font-size: 0.68rem;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.smart-natural-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.smart-natural-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.86rem;
+  padding: 9px 12px;
+  border-radius: 11px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card-solid);
+  color: var(--text-main);
+}
+
+.btn-smart-parse {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  color: #ffffff;
+  border: none;
+  border-radius: 11px;
+  padding: 9px 13px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px var(--primary-accent-glow);
+  transition: transform 0.12s ease, filter 0.12s ease;
+}
+
+.btn-smart-parse:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+}
+
+.btn-smart-parse:active {
+  transform: scale(0.97);
+}
+
+.author-presets-wrap {
+  margin-bottom: 13px;
+}
+
+.author-presets-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.author-presets-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.author-preset-chip {
+  background: var(--bg-card-solid);
+  border: 1.5px solid var(--border-color);
+  color: var(--text-main);
+  padding: 6px 11px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  box-shadow: var(--shadow-sm);
+  transition: all 0.14s ease;
+}
+
+.author-preset-chip:hover,
+.author-preset-chip:active {
+  border-color: var(--primary-accent);
+  background: rgba(37, 99, 235, 0.1);
+  transform: translateY(-1px);
+}
+
+.author-preset-chip.preset-ella:hover,
+.author-preset-chip.preset-ella:active {
+  border-color: var(--wife-pink);
+  background: var(--wife-bg);
+}
+
+/* ============================================================================
+   SELECTOR DE CUOTAS CMR (.cmr-installments-bar)
+   ============================================================================ */
+.cmr-installments-bar {
+  margin-top: 9px;
+  padding: 8px 11px;
+  border-radius: 12px;
+  background: var(--cmr-bg);
+  border: 1px solid rgba(22, 163, 74, 0.35);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cmr-installments-label {
+  font-size: 0.77rem;
+  font-weight: 800;
+  color: var(--text-main);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.cmr-installments-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cmr-inst-pill {
+  background: var(--bg-card-solid);
+  border: 1px solid rgba(22, 163, 74, 0.38);
+  color: var(--text-secondary);
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.cmr-inst-pill:hover {
+  border-color: #16a34a;
+  color: var(--text-main);
+}
+
+.cmr-inst-pill.active {
+  background: linear-gradient(135deg, #16a34a, #15803d);
+  color: #ffffff;
+  border-color: transparent;
+  box-shadow: 0 3px 10px rgba(22, 163, 74, 0.35);
+}
+
+/* ============================================================================
+   GASTOS HORMIGA & COMPARATIVA MULTI-MES + WHATSAPP EN PAREJA
+   ============================================================================ */
+.ant-comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.ant-card,
+.comparison-card {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.ant-merchant-list,
+.comparison-cat-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ant-merchant-pill {
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.73rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.sub-duplicate-alert {
+  background: var(--rose-bg);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 10px;
+  padding: 7px 10px;
+  font-size: 0.75rem;
+  color: var(--text-main);
+}
+
+.whatsapp-couple-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-strong);
+}
+
+.btn-whatsapp-couple {
+  background: linear-gradient(135deg, #16a34a 0%, #15803d 100%);
+  color: #ffffff;
+  border: none;
+  border-radius: 10px;
+  padding: 7px 12px;
+  font-size: 0.76rem;
+  font-weight: 800;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  text-decoration: none;
+  box-shadow: 0 3px 10px rgba(22, 163, 74, 0.25);
+  transition: transform 0.12s ease, filter 0.12s ease;
+}
+
+.btn-whatsapp-couple:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+}
+
+.btn-whatsapp-couple.btn-wa-pink {
+  background: linear-gradient(135deg, #ec4899 0%, #db2777 100%);
+  box-shadow: 0 3px 10px rgba(219, 39, 119, 0.25);
+}
+
+@media (max-width: 760px) {
+  .smart-natural-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .smart-natural-input {
+    font-size: 16px;
+  }
+
+  .author-presets-row {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+
+  .author-presets-row::-webkit-scrollbar {
+    display: none;
+  }
+
+  .author-preset-chip {
+    flex: 0 0 auto;
+  }
+}
+
+/* ============================================================================
    IMPRESIÓN EJECUTIVA PDF (@media print) — INFORME FINANCIERO FAMILIAR MENSUAL
    ============================================================================ */
 @media print {

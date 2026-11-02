@@ -375,6 +375,16 @@ function extractContactName_(rawNote) {
     .join(' ');
 }
 
+function formatInstallmentBadge_(tx) {
+  var total = Math.round(Number((tx && (tx.installmentsTotal || tx.installments)) || 1));
+  if (!(total > 1)) return '';
+  var current = Math.max(
+    1,
+    Math.min(total, Math.round(Number((tx && (tx.installmentNumber || tx.installmentCurrent)) || 1)))
+  );
+  return 'Cuota ' + current + '/' + total;
+}
+
 function updateReadableSheets_(ss, state) {
   var activeYm = detectActiveYearMonth_(state);
   var categories = (state && state.categories) || [];
@@ -404,17 +414,23 @@ function updateReadableSheets_(ss, state) {
 
   if (allTxs.length > 0) {
     var movRows = allTxs.map(function (t) {
-      var tipo =
+      var baseTipo =
         t.type === 'expense' ? 'Gasto' :
         t.type === 'income' ? 'Ingreso' :
         t.type === 'reimbursement' ? 'Reembolso' :
-        t.type === 'transfer_wife' ? 'Traspaso a ' + wifeName :
+        t.type === 'transfer_wife' ? 'Aporte a Fondo Familiar de ' + wifeName :
         t.type === 'cmr_payment' ? 'Pago CMR' :
         t.type === 'loan_received' ? 'Préstamo Recibido' :
         t.type === 'loan_repaid' ? 'Devolución Préstamo' :
         t.type === 'loan_given' ? 'Préstamo por Cobrar' :
         t.type === 'loan_collected' ? 'Préstamo Cobrado' :
         t.type === 'savings_withdrawal' ? 'Retiro de Ahorro' : 'Otro';
+      var instBadge = formatInstallmentBadge_(t);
+      var tipo = instBadge ? (baseTipo + ' (' + instBadge + ')') : baseTipo;
+      var rawNote = String(t.note || '');
+      var noteText = (instBadge && rawNote.toLowerCase().indexOf(instBadge.toLowerCase()) === -1)
+        ? (rawNote ? (rawNote + ' (' + instBadge + ')') : instBadge)
+        : rawNote;
       var cat = catMap[t.categoryId] || t.categoryId || '-';
       var autor = t.author === 'ella' ? wifeName : husbandName;
       var pmLabel = PAYMENT_LABELS_[t.paymentMethod] || t.paymentMethod || '';
@@ -422,7 +438,7 @@ function updateReadableSheets_(ss, state) {
         t.date || '',
         tipo,
         cat,
-        t.note || '',
+        noteText,
         Number(t.amount || 0),
         pmLabel,
         autor,
@@ -568,19 +584,48 @@ function updateReadableSheets_(ss, state) {
   var cmrPendingReserve = Math.max(0, cmrCumulativeSpent - cmrCumulativePaid);
   var wifePendingBalance = wifeCumulativeTransferred - wifeCumulativeSpent;
 
+  var cmrInstNotes = [];
+  var cmrInstallmentRows = [];
+  monthTxs.forEach(function (tx) {
+    if (tx.type === 'expense' && tx.paymentMethod === 'cmr_falabella') {
+      var badge = formatInstallmentBadge_(tx);
+      if (badge) {
+        var noteClean = String(tx.note || 'Compra CMR').trim();
+        cmrInstNotes.push(noteClean + ' (' + badge + ')');
+        cmrInstallmentRows.push([
+          '↳ Compra CMR en cuotas (' + (tx.date || activeYm) + '): ' + noteClean + ' — ' + badge,
+          Number(tx.amount || 0),
+          Number(tx.amount || 0),
+          badge + ' activa en el mes e incluida en el Escudo CMR'
+        ]);
+      }
+    }
+  });
+
   var escudoRows = [
-    ['PANEL EJECUTIVO — ESCUDO CMR FALABELLA Y CONTROL CUENTA MUJER', activeYm, '', ''],
+    ['PANEL EJECUTIVO — ESCUDO CMR FALABELLA Y FONDO FAMILIAR DE ' + wifeName.toUpperCase(), activeYm, '', ''],
     ['Sección / Indicador', 'Monto Mes Activo (CLP)', 'Acumulado con Arrastre (CLP)', 'Explicación Operativa'],
     ['ESCUDO CMR FALABELLA', '', '', 'Protección contra pago de tarjeta con ahorros'],
-    ['Compras con CMR del mes', cmrSpentMonth, cmrCumulativeSpent, 'Gastos pagados con tarjeta CMR Falabella'],
+    [
+      'Compras con CMR del mes',
+      cmrSpentMonth,
+      cmrCumulativeSpent,
+      cmrInstNotes.length > 0
+        ? 'Gastos pagados con tarjeta CMR Falabella — Incluye cuotas: ' + cmrInstNotes.join(', ')
+        : 'Gastos pagados con tarjeta CMR Falabella'
+    ],
     ['Pagos de facturación CMR registrados', cmrPaidMonth, cmrCumulativePaid, 'Abonos/pagos hechos desde Banco de Chile a CMR'],
     ['Reserva Intocable pendiente en Banco de Chile', Math.max(0, cmrSpentMonth - cmrPaidMonth), cmrPendingReserve, 'Dinero que DEBES mantener intacto en Banco de Chile para pagar CMR'],
     ['', '', '', ''],
-    ['CONTROL CUENTA MUJER (' + wifeName.toUpperCase() + ')', '', '', 'Evita duplicar gastos al transferir a ' + wifeName],
-    ['Total transferido a ' + wifeName, wifeTransferredMonth, wifeCumulativeTransferred, 'Traspasos internos desde Banco de Chile (no cuentan como gasto aún)'],
-    ['Total gastado/rendido desde Cuenta Mujer', wifeSpentMonth, wifeCumulativeSpent, 'Compras reales pagadas con Cuenta Mujer'],
-    ['Saldo pendiente por rendir / disponible en Cuenta Mujer', wifeTransferredMonth - wifeSpentMonth, wifePendingBalance, 'Fondos disponibles en la cuenta de ' + wifeName + ' pendientes de uso o registro']
+    ['FONDO FAMILIAR EN CUENTA DE ' + wifeName.toUpperCase(), '', '', 'Gestión colaborativa en equipo sin duplicar gastos al transferir a ' + wifeName],
+    ['Aportes transferidos al Fondo Familiar de ' + wifeName, wifeTransferredMonth, wifeCumulativeTransferred, 'Traspasos internos desde Banco de Chile al fondo familiar (no cuentan como gasto aún)'],
+    ['Compras Familiares Registradas por ' + wifeName, wifeSpentMonth, wifeCumulativeSpent, 'Compras familiares reales pagadas desde la cuenta de ' + wifeName],
+    ['Fondo Familiar Disponible en Cuenta de ' + wifeName, wifeTransferredMonth - wifeSpentMonth, wifePendingBalance, 'Fondo familiar disponible en la cuenta de ' + wifeName + ' para próximas compras del hogar']
   ];
+
+  for (var ci = 0; ci < cmrInstallmentRows.length; ci++) {
+    escudoRows.push(cmrInstallmentRows[ci]);
+  }
 
   escudoSheet.getRange(1, 1, escudoRows.length, 4).setValues(escudoRows);
   escudoSheet.getRange(1, 1, 1, 4).setFontWeight('bold').setBackground('#0f172a').setFontColor('#ffffff');

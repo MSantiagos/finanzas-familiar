@@ -1,6 +1,6 @@
 import {
   CHILE_MERCHANT_RULES
-} from '../data/defaults.js?v=8';
+} from '../data/defaults.js';
 
 function stripAccents(str) {
   return String(str || '')
@@ -137,7 +137,7 @@ export function normalizeBankDescription(rawDescription, options = {}) {
 
   // 1. Limpiar prefijos repetidos de operación bancaria y pasarelas de pago
   const prefixPattern =
-    /^(?:pago\s*:|cargo\s+por\s+compra|compra\s+con\s+tarjeta(?:\s+de\s+(?:debito|débito|credito|crédito))?|compra\s+tarjeta(?:\s+(?:debito|débito|credito|crédito))?|compra\s+nacional|compra\s+internacional|compra\s+redcompra|compra\s+normal|compra\s+en\s+l[ií]nea|pac\s+(?=[a-z0-9])|pat\s+(?=[a-z0-9]))\s*/i;
+    /^(?:pago\s*:|cargo\s+por\s+compra|compra\s+con\s+tarjeta(?:\s+de\s+(?:debito|débito|credito|crédito))?|compra\s+tarjeta(?:\s+(?:debito|débito|credito|crédito))?|compra\s+nacional|compra\s+internacional|compra\s+redcompra|compra\s+normal|compra\s+en\s+l[ií]nea|compra\s+(?=[a-z0-9])|pac\s+(?=[a-z0-9])|pat\s+(?=[a-z0-9]))\s*/i;
   const processorPattern =
     /^(?:tbk|merpago|mercadopago|mp|sumup|getnet|kushki|flow|webpay|dl|dlocal|khipu|payu|etpay)\s*[\*\-]\s*(?=.+)/i;
 
@@ -712,7 +712,7 @@ function inferSmartContextForIncomingAbono(row, allTransactions, learnedContacts
   }
 
   // 1. Reembolsos médicos (Isapre / Fonasa / Seguros complementarios)
-  if (/isapre|colmena|consalud|cruz\s*blanca|banmedica|vida\s*tres|masvida|esencial|fonasa|metlife|bice\s*vida|sura|chubb|bupa|seguro|reembolso\s*med|imed|i-med|bono/i.test(lower)) {
+  if (/isapre|colmena|consalud|cruz\s*blanca|banmedica|vida\s*tres|masvida|esencial|fonasa|metlife|bice\s*vida|sura|chubb|bupa|seguro|reembolso\s*med|imed|i-med|\bbono\b/i.test(lower)) {
     return {
       abonoAction: 'reimburse',
       abonoCategory: 'reimbursement',
