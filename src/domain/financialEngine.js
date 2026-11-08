@@ -319,6 +319,11 @@ export function calculateMonthlyFinancialSummary(state = {}, activeYearMonth, to
   const txs = allTxs.filter((t) => t && String(t.date || '').startsWith(ym));
 
   let realIncome = 0;
+  let baseRealIncome = 0;
+  let extraIncomeTotal = 0;
+  let extraIncomeToSavings = 0;
+  let extraIncomeToBudget = 0;
+  const extraIncomeItems = [];
   let grossExpense = 0;
   let totalReimbursements = 0;
   let cmrSpent = 0;
@@ -383,6 +388,18 @@ export function calculateMonthlyFinancialSummary(state = {}, activeYearMonth, to
     const amt = Math.max(0, Math.round(Number(tx.amount || 0)));
     if (tx.type === 'income') {
       realIncome += amt;
+      if (tx.isExtraIncome || tx.extraIncomeMode) {
+        extraIncomeTotal += amt;
+        const mode = tx.extraIncomeMode || 'savings';
+        extraIncomeItems.push({ ...tx, amount: amt, extraIncomeMode: mode });
+        if (mode === 'savings') {
+          extraIncomeToSavings += amt;
+        } else {
+          extraIncomeToBudget += amt;
+        }
+      } else {
+        baseRealIncome += amt;
+      }
     } else if (tx.type === 'expense') {
       grossExpense += amt;
       const catId = tx.categoryId || 'imprevistos';
@@ -475,8 +492,12 @@ export function calculateMonthlyFinancialSummary(state = {}, activeYearMonth, to
 
   const netExpense = Math.max(0, grossExpense - totalReimbursements);
   const incomeTarget = monthCfg.incomeTarget;
-  const savingsGoal = monthCfg.savingsGoal;
-  const effectiveIncome = realIncome > 0 ? realIncome : incomeTarget;
+  const baseSavingsGoal = monthCfg.savingsGoal;
+  const baseEffectiveIncome = baseRealIncome > 0 ? baseRealIncome : incomeTarget;
+  const effectiveIncome = extraIncomeTotal > 0
+    ? baseEffectiveIncome + extraIncomeTotal
+    : (realIncome > 0 ? realIncome : incomeTarget);
+  const savingsGoal = baseSavingsGoal + extraIncomeToSavings;
   const incomeVsTargetDiff = realIncome - incomeTarget;
   const spendableAfterSavings = effectiveIncome - savingsGoal;
   const remainingSpendable = spendableAfterSavings - netExpense;
@@ -524,8 +545,15 @@ export function calculateMonthlyFinancialSummary(state = {}, activeYearMonth, to
     txs,
     incomeTarget,
     realIncome,
+    baseRealIncome,
+    baseEffectiveIncome,
+    extraIncomeTotal,
+    extraIncomeToSavings,
+    extraIncomeToBudget,
+    extraIncomeItems,
     effectiveIncome,
     incomeVsTargetDiff,
+    baseSavingsGoal,
     savingsGoal,
     savingsWithdrawnThisMonth,
     spendableAfterSavings,

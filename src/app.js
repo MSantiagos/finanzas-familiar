@@ -1,7 +1,7 @@
 import {
   PAYMENT_METHODS,
   SAMPLE_BANK_STATEMENT_TEXT
-} from './data/defaults.js?v=16';
+} from './data/defaults.js?v=17';
 import {
   loadState,
   saveState,
@@ -17,7 +17,7 @@ import {
   setupAutoOnlineSync,
   exportStateToJsonString,
   importStateFromJsonString
-} from './services/storage.js?v=16';
+} from './services/storage.js?v=17';
 import {
   parseBankStatementText,
   reconcileStatementRows,
@@ -25,19 +25,19 @@ import {
   formatLiveCLPInput,
   normalizeContactKey,
   extractContactDisplayName
-} from './services/reconciler.js?v=16';
+} from './services/reconciler.js?v=17';
 import {
   scanReceiptWithGemini,
   classifyStatementRowsWithGemini,
   getDemoScannedReceipt,
   generateMonthlyFamilyAuditWithGemini
-} from './services/geminiScanner.js?v=16';
-import { exportStateToExcel } from './services/excelExport.js?v=16';
+} from './services/geminiScanner.js?v=17';
+import { exportStateToExcel } from './services/excelExport.js?v=17';
 import {
   parseQuickNaturalExpense,
   buildInstallmentTransactions,
   getQuickPresetsForAuthor
-} from './services/smartInput.js?v=16';
+} from './services/smartInput.js?v=17';
 import {
   calculateMonthlyFinancialSummary,
   calculateBurnRateAndProjection,
@@ -53,7 +53,7 @@ import {
   getAnnualSubscriptionsForMonth,
   applyDynamicAnnualSubscriptionsToMonthBudget,
   buildCoupleWhatsAppMessages
-} from './domain/financialEngine.js?v=16';
+} from './domain/financialEngine.js?v=17';
 
 // Estado global en memoria de la aplicación
 let appState = loadState();
@@ -153,6 +153,15 @@ let isAddingPatrimonyItem = false;
 let editingPatrimonyId = null;
 let isAddingAnnualSub = false;
 let editingAnnualSubId = null;
+
+// Estado del formulario de Ingresos Extras (por defecto: Ahorro Blindado, o destino a Presupuesto)
+let extraIncomeForm = {
+  amount: '',
+  note: '',
+  mode: 'savings', // 'savings' | 'category' | 'proportional'
+  targetCategoryId: 'gustos_personales',
+  addToPatrimonyVault: false
+};
 
 // Estado del buscador y filtros instantáneos del historial de movimientos
 let txFilterState = {
@@ -1183,25 +1192,164 @@ function renderInternalAndIncomeForm(metrics) {
     ${internalSubTab === 'income' ? `
       <div class="internal-card">
         <div class="internal-card-header">
-          <span class="internal-icon">💰🏦</span>
+          <span class="internal-icon">💰🛡️</span>
           <div>
-            <h3>Registrar Sueldo o Ingreso Extra del Mes</h3>
-            <p>Anota el sueldo líquido recibido, bonos laborales o ingresos adicionales reales del hogar.</p>
+            <h3>Registrar Ingreso Extra (Por Defecto a Ahorro Blindado o Destinar a un Presupuesto)</h3>
+            <p>
+              Tu ingreso familiar base de <strong>${formatCLP(metrics.incomeTarget)}</strong> (Sueldo + Retiro mensual de utilidades Vías) ya está contemplado en tu presupuesto mensual.
+              Cuando recibas un <strong>Ingreso Extra</strong>, por defecto se va <strong>100% a Ahorro Blindado</strong> para no inflar el gasto diario, o puedes elegir inyectarlo a un presupuesto específico.
+            </p>
           </div>
         </div>
+
         <div class="form-row-two">
           <div class="input-group">
-            <label>Monto del Ingreso (CLP)</label>
-            <input type="text" inputmode="numeric" id="income-amount" class="text-input live-clp-input" placeholder="Ej: 2.350.000" />
+            <label>Monto del Ingreso Extra (CLP)</label>
+            <input type="text" inputmode="numeric" id="income-amount" class="text-input live-clp-input" value="${formatLiveCLPInput(extraIncomeForm.amount)}" placeholder="Ej: 350.000" />
           </div>
           <div class="input-group">
-            <label>Concepto</label>
-            <input type="text" id="income-note" class="text-input" placeholder="Ej: Sueldo mensual / Bono" />
+            <label>Concepto / Origen del Ingreso Extra</label>
+            <input type="text" id="income-note" class="text-input" value="${extraIncomeForm.note}" placeholder="Ej: Retiro extra utilidades Vías / Bono / Devolución" />
           </div>
         </div>
+
+        <div style="margin:12px 0;">
+          <label style="display:block;font-size:0.8rem;font-weight:700;margin-bottom:8px;color:var(--text-primary);">
+            ¿A dónde quieres destinar este Ingreso Extra?
+          </label>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:8px;">
+            <button
+              type="button"
+              data-action="set-extra-income-mode"
+              data-mode="savings"
+              style="text-align:left;padding:10px 12px;border-radius:12px;cursor:pointer;border:2px solid ${extraIncomeForm.mode === 'savings' ? '#10b981' : 'var(--border-strong)'};background:${extraIncomeForm.mode === 'savings' ? 'rgba(16,185,129,0.08)' : 'var(--bg-card)'};"
+            >
+              <div style="font-weight:700;font-size:0.84rem;color:${extraIncomeForm.mode === 'savings' ? '#047857' : 'var(--text-primary)'};">
+                🛡️ 100% a Ahorro Blindado (Recomendado)
+              </div>
+              <small style="font-size:0.74rem;color:var(--text-secondary);display:block;margin-top:3px;">
+                Suma directo a tu ahorro del mes (${formatCLP(metrics.savingsGoal)}) sin tocar ni inflar tus presupuestos de gasto.
+              </small>
+            </button>
+
+            <button
+              type="button"
+              data-action="set-extra-income-mode"
+              data-mode="category"
+              style="text-align:left;padding:10px 12px;border-radius:12px;cursor:pointer;border:2px solid ${extraIncomeForm.mode === 'category' ? '#3b82f6' : 'var(--border-strong)'};background:${extraIncomeForm.mode === 'category' ? 'rgba(59,130,246,0.08)' : 'var(--bg-card)'};"
+            >
+              <div style="font-weight:700;font-size:0.84rem;color:${extraIncomeForm.mode === 'category' ? '#1d4ed8' : 'var(--text-primary)'};">
+                🎯 Destinar a un Presupuesto Específico
+              </div>
+              <small style="font-size:0.74rem;color:var(--text-secondary);display:block;margin-top:3px;">
+                Elige a cuál categoría sumarle este monto para poder gastarlo este mes.
+              </small>
+            </button>
+
+            <button
+              type="button"
+              data-action="set-extra-income-mode"
+              data-mode="proportional"
+              style="text-align:left;padding:10px 12px;border-radius:12px;cursor:pointer;border:2px solid ${extraIncomeForm.mode === 'proportional' ? '#8b5cf6' : 'var(--border-strong)'};background:${extraIncomeForm.mode === 'proportional' ? 'rgba(139,92,246,0.08)' : 'var(--bg-card)'};"
+            >
+              <div style="font-weight:700;font-size:0.84rem;color:${extraIncomeForm.mode === 'proportional' ? '#6d28d9' : 'var(--text-primary)'};">
+                ⚖️ Repartir en Presupuestos No Fijos (🔓)
+              </div>
+              <small style="font-size:0.74rem;color:var(--text-secondary);display:block;margin-top:3px;">
+                Distribuye el ingreso extra proporcionalmente respetando tus presupuestos con 📌 Fijo.
+              </small>
+            </button>
+          </div>
+        </div>
+
+        ${extraIncomeForm.mode === 'savings' ? `
+          <div style="background:rgba(16,185,129,0.07);border:1px solid #a7f3d0;border-radius:10px;padding:10px 12px;margin-bottom:12px;">
+            <label style="display:flex;align-items:center;gap:8px;font-size:0.82rem;cursor:pointer;font-weight:600;color:#065f46;">
+              <input type="checkbox" id="extra-income-patrimony-check" ${extraIncomeForm.addToPatrimonyVault ? 'checked' : ''} style="width:16px;height:16px;accent-color:#10b981;" />
+              <span>🏦 Guardar también este ahorro extra como activo en mi <strong>Bóveda de Patrimonio Intocable</strong></span>
+            </label>
+          </div>
+        ` : ''}
+
+        ${extraIncomeForm.mode === 'category' ? `
+          <div class="input-group" style="margin-bottom:12px;background:rgba(59,130,246,0.06);border:1px solid #bfdbfe;border-radius:10px;padding:10px 12px;">
+            <label style="font-weight:700;color:#1e40af;">🎯 Selecciona el Presupuesto al que quieres sumarle este Ingreso Extra:</label>
+            <select id="extra-income-target-cat" class="text-input" style="margin-top:6px;">
+              ${(appState.categories || [])
+                .filter((c) => c.id !== 'suscripciones_anuales' && !c.isDynamicAnnual)
+                .map((cat) => {
+                  const curB = Math.round(Number(metrics.monthCfg.categories?.[cat.id] ?? cat.defaultBudget ?? 0));
+                  return `<option value="${cat.id}" ${extraIncomeForm.targetCategoryId === cat.id ? 'selected' : ''}>${cat.icon} ${cat.name} (Actual: ${formatCLP(curB)})</option>`;
+                })
+                .join('')}
+            </select>
+          </div>
+        ` : ''}
+
         <button type="button" class="btn-internal-income" data-action="save-income">
-          💰 Sumar Ingreso al Mes
+          ${extraIncomeForm.mode === 'savings'
+            ? '🛡️ Guardar Ingreso Extra en Ahorro Blindado'
+            : extraIncomeForm.mode === 'category'
+              ? '🎯 Guardar y Sumar al Presupuesto Elegido'
+              : '⚖️ Guardar y Repartir en Presupuestos No Fijos'}
         </button>
+
+        ${(metrics.extraIncomeItems || []).length > 0 ? `
+          <div style="margin-top:16px;border-top:1px solid var(--border-subtle);padding-top:12px;">
+            <h4 style="margin:0 0 8px;font-size:0.84rem;">✨ Ingresos Extras de ${getMonthNameLabel(activeYearMonth)} (puedes cambiar su destino cuando quieras)</h4>
+            <div class="tx-list">
+              ${(metrics.extraIncomeItems || []).map((item) => {
+                const mode = item.extraIncomeMode || 'savings';
+                const targetCat = (appState.categories || []).find((c) => c.id === item.extraTargetCategoryId);
+                const destLabel =
+                  mode === 'savings'
+                    ? '🛡️ En Ahorro Blindado'
+                    : mode === 'category' && targetCat
+                      ? `🎯 Sumado a ${targetCat.icon} ${targetCat.name}`
+                      : '⚖️ Repartido en presupuestos no fijos';
+
+                return `
+                  <div class="tx-row" style="padding:10px 12px;">
+                    <div class="tx-left">
+                      <div class="tx-icon-circle">${mode === 'savings' ? '🛡️' : '🎯'}</div>
+                      <div class="tx-info">
+                        <div class="tx-title-line">
+                          <strong>${item.note || 'Ingreso Extra'}</strong>
+                          <span class="sem-badge ${mode === 'savings' ? 'bar-green' : 'bar-yellow'}" style="font-size:0.7rem;">
+                            ${destLabel}
+                          </span>
+                        </div>
+                        <div class="tx-meta-line">
+                          <span>${item.date}</span>
+                          <span>•</span>
+                          <span>Monto: <strong>${formatCLP(item.amount)}</strong></span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="tx-right" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                      <select
+                        class="text-input extra-income-reassign-select"
+                        data-tx-id="${item.id}"
+                        style="padding:5px 8px;font-size:0.74rem;width:auto;min-width:185px;"
+                        title="Cambiar el destino de este ingreso extra entre Ahorro o un Presupuesto"
+                      >
+                        <option value="savings" ${mode === 'savings' ? 'selected' : ''}>🛡️ Enviar a Ahorro Blindado</option>
+                        <option value="proportional" ${mode === 'proportional' ? 'selected' : ''}>⚖️ Repartir en No Fijos (🔓)</option>
+                        ${(appState.categories || [])
+                          .filter((c) => c.id !== 'suscripciones_anuales' && !c.isDynamicAnnual)
+                          .map((cat) => `<option value="cat:${cat.id}" ${mode === 'category' && item.extraTargetCategoryId === cat.id ? 'selected' : ''}>🎯 Destinar a ${cat.icon} ${cat.name}</option>`)
+                          .join('')}
+                      </select>
+                      <button type="button" class="btn-delete-tx" data-action="delete-tx" data-id="${item.id}" title="Eliminar este ingreso extra">
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        ` : ''}
       </div>
     ` : ''}
 
@@ -1763,9 +1911,24 @@ function renderBudgetTab(metrics) {
 
     <section class="kpi-grid">
       <div class="kpi-card kpi-income">
-        <span class="kpi-title">💰 Ingresos de ${getMonthNameLabel(activeYearMonth)}</span>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap;">
+          <span class="kpi-title">💰 Ingresos de ${getMonthNameLabel(activeYearMonth)}</span>
+          <button
+            type="button"
+            class="btn-secondary-sm"
+            data-action="open-extra-income"
+            style="padding:2px 8px;font-size:0.7rem;border-color:#10b981;color:#047857;font-weight:700;"
+            title="Registrar un ingreso extra (se va a Ahorro por defecto o al presupuesto que elijas)"
+          >
+            ➕ Ingreso Extra
+          </button>
+        </div>
         <strong class="kpi-num">${formatCLP(metrics.effectiveIncome)}</strong>
-        <span class="kpi-sub">Meta de ahorro blindada: <strong>${formatCLP(metrics.savingsGoal)}</strong></span>
+        <span class="kpi-sub">
+          ${metrics.extraIncomeTotal > 0
+            ? `Base (Sueldo + Vías): <strong>${formatCLP(metrics.incomeTarget)}</strong> + Extras: <strong>${formatCLP(metrics.extraIncomeTotal)}</strong><br/>🛡️ Ahorro blindado: <strong>${formatCLP(metrics.savingsGoal)}</strong> (${formatCLP(metrics.baseSavingsGoal)} base${metrics.extraIncomeToSavings > 0 ? ` + ${formatCLP(metrics.extraIncomeToSavings)} extras` : ''})`
+            : `Base mensual (Sueldo + Vías) • Meta de ahorro blindada: <strong>${formatCLP(metrics.savingsGoal)}</strong>`}
+        </span>
       </div>
 
       <div class="kpi-card kpi-spent">
@@ -1830,7 +1993,12 @@ function renderBudgetTab(metrics) {
       ${(() => {
         const spendableTarget = Math.max(
           0,
-          Math.round(Number(metrics.monthCfg.incomeTarget || 2350000) - Number(metrics.monthCfg.savingsGoal || 250000))
+          Math.round(
+            Number(
+              metrics.spendableAfterSavings ??
+                Number(metrics.monthCfg.incomeTarget || 2350000) - Number(metrics.monthCfg.savingsGoal || 250000)
+            )
+          )
         );
         const totalCatBudgeted = categories.reduce(
           (acc, c) => acc + Math.round(Number(metrics.monthCfg.categories?.[c.id] ?? c.defaultBudget ?? 0)),
@@ -3581,6 +3749,59 @@ function attachDynamicInputListeners() {
     };
   }
 
+  // Controles de Ingresos Extras (sincronizar estado sin perder foco + reasignar destino en 1 clic)
+  const incAmtEl = document.getElementById('income-amount');
+  if (incAmtEl) {
+    incAmtEl.oninput = (e) => {
+      extraIncomeForm.amount = cleanChileanAmount(e.target.value);
+      const formatted = formatLiveCLPInput(e.target.value);
+      if (e.target.value !== formatted) e.target.value = formatted;
+    };
+  }
+  const incNoteEl = document.getElementById('income-note');
+  if (incNoteEl) {
+    incNoteEl.oninput = (e) => {
+      extraIncomeForm.note = e.target.value;
+    };
+  }
+  const incTargetCatEl = document.getElementById('extra-income-target-cat');
+  if (incTargetCatEl) {
+    incTargetCatEl.onchange = (e) => {
+      extraIncomeForm.targetCategoryId = e.target.value;
+    };
+  }
+  const incPatCheckEl = document.getElementById('extra-income-patrimony-check');
+  if (incPatCheckEl) {
+    incPatCheckEl.onchange = (e) => {
+      extraIncomeForm.addToPatrimonyVault = Boolean(e.target.checked);
+    };
+  }
+  document.querySelectorAll('.extra-income-reassign-select').forEach((sel) => {
+    sel.onchange = (e) => {
+      const txId = sel.dataset.txId;
+      const val = e.target.value || 'savings';
+      const tx = (appState.transactions || []).find((t) => t.id === txId);
+      if (!tx) return;
+      if (val === 'savings') {
+        applyExtraIncomeAllocationToBudget(tx, 'savings', null);
+        showToast(`🛡️ "${tx.note}" (${formatCLP(tx.amount)}) movido a Ahorro Blindado`, 'success');
+      } else if (val === 'proportional') {
+        applyExtraIncomeAllocationToBudget(tx, 'proportional', null);
+        showToast(`⚖️ "${tx.note}" (${formatCLP(tx.amount)}) repartido en presupuestos no fijos (🔓)`, 'success');
+      } else if (val.startsWith('cat:')) {
+        const catId = val.slice(4);
+        const catObj = (appState.categories || []).find((c) => c.id === catId);
+        applyExtraIncomeAllocationToBudget(tx, 'category', catId);
+        showToast(
+          `🎯 "${tx.note}" (${formatCLP(tx.amount)}) sumado al presupuesto de ${catObj ? `${catObj.icon} ${catObj.name}` : catId}`,
+          'success'
+        );
+      }
+      saveState(appState);
+      renderApp();
+    };
+  });
+
   // Formulario de Suscripciones Anuales Dinámicas
   const annualSubForm = document.getElementById('annual-sub-form');
   if (annualSubForm) {
@@ -3872,6 +4093,74 @@ function attachDynamicInputListeners() {
       txFilterState.categoryId = e.target.value || 'all';
       renderApp();
     };
+  }
+}
+
+function revertExtraIncomeDeltaFromBudget(tx) {
+  if (!tx || !tx.extraBudgetDelta || typeof tx.extraBudgetDelta !== 'object') return;
+  const txYm = String(tx.date || activeYearMonth).slice(0, 7);
+  ensureMonthBudget(appState, txYm);
+  const mCfg = appState.monthlyBudgets?.[txYm];
+  if (!mCfg || !mCfg.categories) return;
+  for (const [cid, deltaAmt] of Object.entries(tx.extraBudgetDelta)) {
+    const prev = Math.round(Number(mCfg.categories[cid] || 0));
+    mCfg.categories[cid] = Math.max(0, prev - Math.round(Number(deltaAmt || 0)));
+  }
+  mCfg.updatedAt = new Date().toISOString();
+}
+
+function applyExtraIncomeAllocationToBudget(tx, mode = 'savings', targetCategoryId = null) {
+  if (!tx) return;
+  revertExtraIncomeDeltaFromBudget(tx);
+
+  const amt = Math.max(0, Math.round(Number(tx.amount || 0)));
+  const txYm = String(tx.date || activeYearMonth).slice(0, 7);
+  ensureMonthBudget(appState, txYm);
+  const mCfg = appState.monthlyBudgets?.[txYm];
+  const nowISO = new Date().toISOString();
+
+  tx.isExtraIncome = true;
+  tx.updatedAt = nowISO;
+
+  if (mode === 'category' && targetCategoryId && mCfg?.categories) {
+    tx.extraIncomeMode = 'category';
+    tx.extraTargetCategoryId = targetCategoryId;
+    mCfg.categories[targetCategoryId] = Math.round(Number(mCfg.categories[targetCategoryId] || 0)) + amt;
+    tx.extraBudgetDelta = { [targetCategoryId]: amt };
+    mCfg.updatedAt = nowISO;
+  } else if (mode === 'proportional' && mCfg?.categories) {
+    tx.extraIncomeMode = 'proportional';
+    delete tx.extraTargetCategoryId;
+    const categories = (appState.categories || []).filter(
+      (c) => c.id !== 'suscripciones_anuales' && !c.isDynamicAnnual
+    );
+    const lockedMap = mCfg.lockedCategories || {};
+    let unlocked = categories.filter((c) => !lockedMap[c.id]);
+    if (unlocked.length === 0) unlocked = categories;
+
+    const weights = unlocked.map((c) => Math.max(1, Number(mCfg.categories[c.id] || c.defaultBudget || 50000)));
+    const weightSum = weights.reduce((a, b) => a + b, 0) || 1;
+    const deltaMap = {};
+    let assigned = 0;
+
+    unlocked.forEach((c, idx) => {
+      const share = Math.round(((amt * weights[idx]) / weightSum) / 1000) * 1000;
+      deltaMap[c.id] = share;
+      assigned += share;
+    });
+    const rem = amt - assigned;
+    if (rem !== 0 && unlocked.length > 0) {
+      deltaMap[unlocked[0].id] = Math.max(0, (deltaMap[unlocked[0].id] || 0) + rem);
+    }
+    for (const [cid, dVal] of Object.entries(deltaMap)) {
+      mCfg.categories[cid] = Math.round(Number(mCfg.categories[cid] || 0)) + dVal;
+    }
+    tx.extraBudgetDelta = deltaMap;
+    mCfg.updatedAt = nowISO;
+  } else {
+    tx.extraIncomeMode = 'savings';
+    delete tx.extraTargetCategoryId;
+    delete tx.extraBudgetDelta;
   }
 }
 
@@ -4496,29 +4785,102 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
+  if (action === 'open-extra-income') {
+    activeTab = 'register';
+    registerMode = 'internal';
+    internalSubTab = 'income';
+    renderApp();
+    setTimeout(() => {
+      document.getElementById('income-amount')?.focus();
+    }, 60);
+    return;
+  }
+
+  if (action === 'set-extra-income-mode') {
+    const incAmt = document.getElementById('income-amount');
+    const incNote = document.getElementById('income-note');
+    if (incAmt) extraIncomeForm.amount = cleanChileanAmount(incAmt.value);
+    if (incNote) extraIncomeForm.note = incNote.value;
+    extraIncomeForm.mode = btn.dataset.mode || 'savings';
+    renderApp();
+    return;
+  }
+
   if (action === 'save-income') {
-    const amt = cleanChileanAmount(document.getElementById('income-amount')?.value);
-    const note = document.getElementById('income-note')?.value?.trim() || 'Ingreso familiar';
+    const amt = cleanChileanAmount(document.getElementById('income-amount')?.value || extraIncomeForm.amount);
+    const note =
+      document.getElementById('income-note')?.value?.trim() ||
+      extraIncomeForm.note?.trim() ||
+      'Ingreso extra familiar';
     if (amt <= 0) {
-      showToast('Ingresa un monto de ingreso válido', 'error');
+      showToast('Ingresa un monto de ingreso extra válido', 'error');
       return;
     }
+    const mode = extraIncomeForm.mode || 'savings';
+    const targetCatId =
+      document.getElementById('extra-income-target-cat')?.value ||
+      extraIncomeForm.targetCategoryId ||
+      'gustos_personales';
+    const addToVault = Boolean(
+      document.getElementById('extra-income-patrimony-check')?.checked ?? extraIncomeForm.addToPatrimonyVault
+    );
+
     const nowISO = new Date().toISOString();
-    appState.transactions.push({
+    const txDate = getTodayISO().startsWith(activeYearMonth) ? getTodayISO() : `${activeYearMonth}-15`;
+    const newTx = {
       id: `tx_${Date.now()}`,
-      date: getTodayISO(),
+      date: txDate,
       type: 'income',
       amount: amt,
-      categoryId: 'ingreso_sueldo',
+      categoryId: 'ingreso_extra',
       paymentMethod: 'bch_ctacte',
       author: userPrefs.activeAuthor || 'el',
       note,
+      isExtraIncome: true,
+      extraIncomeMode: mode,
       reconciled: true,
       createdAt: nowISO,
       updatedAt: nowISO
-    });
+    };
+
+    applyExtraIncomeAllocationToBudget(newTx, mode, targetCatId);
+    appState.transactions.push(newTx);
+
+    if (mode === 'savings' && addToVault) {
+      if (!Array.isArray(appState.patrimonyItems)) appState.patrimonyItems = [];
+      appState.patrimonyItems.push({
+        id: `pat_ext_${Date.now()}`,
+        name: `Ahorro Ingreso Extra: ${note}`,
+        amountCLP: amt,
+        category: 'historical_savings',
+        institution: 'Banco de Chile / Reserva',
+        owner: userPrefs.activeAuthor || 'el',
+        note: `Guardado automáticamente desde ingreso extra (${txDate})`,
+        createdAt: nowISO,
+        updatedAt: nowISO
+      });
+    }
+
+    extraIncomeForm.amount = '';
+    extraIncomeForm.note = '';
+    extraIncomeForm.addToPatrimonyVault = false;
+
     saveState(appState);
-    showToast(`💰 Ingreso de ${formatCLP(amt)} sumado al mes`, 'success');
+
+    if (mode === 'savings') {
+      showToast(
+        `🛡️ Ingreso extra de ${formatCLP(amt)} enviado 100% a tu Ahorro Blindado${addToVault ? ' y a tu Bóveda Patrimonial' : ''}`,
+        'success'
+      );
+    } else if (mode === 'category') {
+      const catObj = (appState.categories || []).find((c) => c.id === targetCatId);
+      showToast(
+        `🎯 Ingreso extra de ${formatCLP(amt)} sumado al presupuesto de ${catObj ? `${catObj.icon} ${catObj.name}` : targetCatId}`,
+        'success'
+      );
+    } else {
+      showToast(`⚖️ Ingreso extra de ${formatCLP(amt)} repartido en tus presupuestos no fijos (🔓)`, 'success');
+    }
     renderApp();
     return;
   }
@@ -4610,6 +4972,9 @@ document.addEventListener('click', async (e) => {
 
     const deletedIdsSet = new Set(batchToDelete.map((t) => t.id));
     batchToDelete.forEach((t) => {
+      if (t.type === 'income' && t.extraBudgetDelta) {
+        revertExtraIncomeDeltaFromBudget(t);
+      }
       appState.deletedTransactionIds[t.id] = nowISO;
     });
     appState.transactions = allTxs.filter((t) => !deletedIdsSet.has(t.id));
@@ -4632,6 +4997,17 @@ document.addEventListener('click', async (e) => {
     batch.forEach((item) => {
       if (appState.deletedTransactionIds) {
         delete appState.deletedTransactionIds[item.id];
+      }
+      if (item.type === 'income' && item.extraBudgetDelta) {
+        const txYm = String(item.date || activeYearMonth).slice(0, 7);
+        ensureMonthBudget(appState, txYm);
+        const mCfg = appState.monthlyBudgets?.[txYm];
+        if (mCfg?.categories) {
+          for (const [cid, deltaAmt] of Object.entries(item.extraBudgetDelta)) {
+            mCfg.categories[cid] = Math.round(Number(mCfg.categories[cid] || 0)) + Math.round(Number(deltaAmt || 0));
+          }
+          mCfg.updatedAt = nowISO;
+        }
       }
       item.updatedAt = nowISO;
       appState.transactions.push(item);
