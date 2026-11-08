@@ -178,14 +178,29 @@ def merge_family_states(existing, incoming):
             prev_cats = dict(prev_cfg.get("categories") or {})
             new_cats = dict(cfg.get("categories") or {})
             prev_locks = dict(prev_cfg.get("lockedCategories") or {})
-            new_locks = dict(cfg.get("lockedCategories") or {}) if "lockedCategories" in cfg else prev_locks
+            new_locks = dict(cfg.get("lockedCategories") or {})
+            lock_u_prev = str(prev_cfg.get("lockedCategoriesUpdatedAt") or prev_u or "")
+            lock_u_new = str(cfg.get("lockedCategoriesUpdatedAt") or new_u or "")
+
+            if lock_u_new > lock_u_prev:
+                merged_locks = new_locks
+                merged_lock_u = cfg.get("lockedCategoriesUpdatedAt") or new_u
+            elif lock_u_prev > lock_u_new:
+                merged_locks = prev_locks
+                merged_lock_u = prev_cfg.get("lockedCategoriesUpdatedAt") or prev_u
+            else:
+                merged_locks = dict(prev_locks)
+                merged_locks.update(new_locks)
+                merged_lock_u = prev_cfg.get("lockedCategoriesUpdatedAt") or cfg.get("lockedCategoriesUpdatedAt") or prev_u or new_u
+
             if new_u >= prev_u:
                 merged_cats = dict(prev_cats)
                 merged_cats.update(new_cats)
                 merged_m = dict(prev_cfg)
                 merged_m.update(cfg)
                 merged_m["categories"] = merged_cats
-                merged_m["lockedCategories"] = new_locks
+                merged_m["lockedCategories"] = merged_locks
+                merged_m["lockedCategoriesUpdatedAt"] = merged_lock_u
                 monthly_budgets[ym] = merged_m
             else:
                 merged_cats = dict(new_cats)
@@ -193,7 +208,8 @@ def merge_family_states(existing, incoming):
                 merged_m = dict(cfg)
                 merged_m.update(prev_cfg)
                 merged_m["categories"] = merged_cats
-                merged_m["lockedCategories"] = prev_locks
+                merged_m["lockedCategories"] = merged_locks
+                merged_m["lockedCategoriesUpdatedAt"] = merged_lock_u
                 monthly_budgets[ym] = merged_m
 
     # Asegurar que todas las categorías del catálogo base estén presentes en categories y monthlyBudgets

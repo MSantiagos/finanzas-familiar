@@ -219,7 +219,7 @@ function mergeFamilyStates_(existing, incoming) {
     }
   });
 
-  // 5. Fusionar monthlyBudgets comparando updatedAt de cada mes (YYYY-MM)
+  // 5. Fusionar monthlyBudgets comparando updatedAt y lockedCategoriesUpdatedAt de cada mes (YYYY-MM)
   var monthlyBudgets = Object.assign({}, existing.monthlyBudgets || {});
   var incomingBudgets = incoming.monthlyBudgets || {};
   Object.keys(incomingBudgets).forEach(function (ym) {
@@ -230,8 +230,33 @@ function mergeFamilyStates_(existing, incoming) {
     } else {
       var uA = String(cfgA.updatedAt || '');
       var uB = String(cfgB.updatedAt || '');
+      var lockUA = String(cfgA.lockedCategoriesUpdatedAt || uA || '');
+      var lockUB = String(cfgB.lockedCategoriesUpdatedAt || uB || '');
+      var mergedLocks;
+      var mergedLockU;
+      if (lockUB > lockUA) {
+        mergedLocks = Object.assign({}, cfgB.lockedCategories || {});
+        mergedLockU = cfgB.lockedCategoriesUpdatedAt || uB;
+      } else if (lockUA > lockUB) {
+        mergedLocks = Object.assign({}, cfgA.lockedCategories || {});
+        mergedLockU = cfgA.lockedCategoriesUpdatedAt || uA;
+      } else {
+        mergedLocks = Object.assign({}, cfgA.lockedCategories || {}, cfgB.lockedCategories || {});
+        mergedLockU = cfgA.lockedCategoriesUpdatedAt || cfgB.lockedCategoriesUpdatedAt || uA || uB;
+      }
+
       if (uB >= uA) {
-        monthlyBudgets[ym] = cfgB;
+        monthlyBudgets[ym] = Object.assign({}, cfgA, cfgB, {
+          categories: Object.assign({}, cfgA.categories || {}, cfgB.categories || {}),
+          lockedCategories: mergedLocks,
+          lockedCategoriesUpdatedAt: mergedLockU
+        });
+      } else {
+        monthlyBudgets[ym] = Object.assign({}, cfgB, cfgA, {
+          categories: Object.assign({}, cfgB.categories || {}, cfgA.categories || {}),
+          lockedCategories: mergedLocks,
+          lockedCategoriesUpdatedAt: mergedLockU
+        });
       }
     }
   });

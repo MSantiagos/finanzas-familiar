@@ -1,7 +1,7 @@
 import {
   PAYMENT_METHODS,
   SAMPLE_BANK_STATEMENT_TEXT
-} from './data/defaults.js?v=15';
+} from './data/defaults.js?v=16';
 import {
   loadState,
   saveState,
@@ -17,7 +17,7 @@ import {
   setupAutoOnlineSync,
   exportStateToJsonString,
   importStateFromJsonString
-} from './services/storage.js?v=15';
+} from './services/storage.js?v=16';
 import {
   parseBankStatementText,
   reconcileStatementRows,
@@ -25,19 +25,19 @@ import {
   formatLiveCLPInput,
   normalizeContactKey,
   extractContactDisplayName
-} from './services/reconciler.js?v=15';
+} from './services/reconciler.js?v=16';
 import {
   scanReceiptWithGemini,
   classifyStatementRowsWithGemini,
   getDemoScannedReceipt,
   generateMonthlyFamilyAuditWithGemini
-} from './services/geminiScanner.js?v=15';
-import { exportStateToExcel } from './services/excelExport.js?v=15';
+} from './services/geminiScanner.js?v=16';
+import { exportStateToExcel } from './services/excelExport.js?v=16';
 import {
   parseQuickNaturalExpense,
   buildInstallmentTransactions,
   getQuickPresetsForAuthor
-} from './services/smartInput.js?v=15';
+} from './services/smartInput.js?v=16';
 import {
   calculateMonthlyFinancialSummary,
   calculateBurnRateAndProjection,
@@ -53,7 +53,7 @@ import {
   getAnnualSubscriptionsForMonth,
   applyDynamicAnnualSubscriptionsToMonthBudget,
   buildCoupleWhatsAppMessages
-} from './domain/financialEngine.js?v=15';
+} from './domain/financialEngine.js?v=16';
 
 // Estado global en memoria de la aplicación
 let appState = loadState();
@@ -244,7 +244,16 @@ function getMonthNameLabel(ym) {
  * para NUNCA interrumpir el teclado del iPhone con un re-render en segundo plano.
  */
 function isUserTyping() {
-  if (editingTxId) return true;
+  if (
+    editingTxId ||
+    isEditingBudgets ||
+    isAddingAnnualSub ||
+    editingAnnualSubId ||
+    isAddingPatrimonyItem ||
+    editingPatrimonyId
+  ) {
+    return true;
+  }
   const el = document.activeElement;
   if (!el) return false;
   const tag = (el.tagName || '').toUpperCase();
@@ -3352,13 +3361,24 @@ function attachDynamicInputListeners() {
     const persistLocksToState = () => {
       const mCfg = appState.monthlyBudgets?.[activeYearMonth];
       if (!mCfg) return;
+      const nowISO = new Date().toISOString();
       const nextLocks = {};
       lockedCategoryIds.forEach((cid) => {
         if (cid !== 'suscripciones_anuales') {
           nextLocks[cid] = true;
         }
       });
+      const { incomeTarget, savingsGoal, currentAmounts } = readFormAmounts();
+      mCfg.incomeTarget = incomeTarget;
+      mCfg.savingsGoal = savingsGoal;
+      mCfg.categories = {
+        ...(mCfg.categories || {}),
+        ...currentAmounts
+      };
       mCfg.lockedCategories = nextLocks;
+      mCfg.lockedCategoriesUpdatedAt = nowISO;
+      mCfg.updatedAt = nowISO;
+      saveState(appState);
     };
 
     const refreshLiveBudgetSummaryDOM = () => {
@@ -3540,6 +3560,7 @@ function attachDynamicInputListeners() {
         }
       });
       monthCfg.lockedCategories = nextLocks;
+      monthCfg.lockedCategoriesUpdatedAt = nowISO;
 
       (appState.categories || []).forEach((cat) => {
         if (cat.id === 'suscripciones_anuales' || cat.isDynamicAnnual) {
@@ -4289,7 +4310,9 @@ document.addEventListener('click', async (e) => {
       monthCfg.lockedCategories[cid] = true;
       showToast(`📌 ${catLabel} fijado (protegido frente a repartos y cobros anuales)`, 'success');
     }
-    monthCfg.updatedAt = new Date().toISOString();
+    const nowISO = new Date().toISOString();
+    monthCfg.lockedCategoriesUpdatedAt = nowISO;
+    monthCfg.updatedAt = nowISO;
     saveState(appState);
     renderApp();
     return;

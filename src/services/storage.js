@@ -307,7 +307,26 @@ export function mergeFamilyStates(stateA, stateB) {
     } else {
       const uA = String(cfgA.updatedAt || '');
       const uB = String(cfgB.updatedAt || '');
-      if (uB >= uA) {
+      const lockUA = String(cfgA.lockedCategoriesUpdatedAt || cfgA.updatedAt || '');
+      const lockUB = String(cfgB.lockedCategoriesUpdatedAt || cfgB.updatedAt || '');
+
+      let mergedLocks;
+      let mergedLocksUpdatedAt;
+      if (lockUB > lockUA) {
+        mergedLocks = { ...(cfgB.lockedCategories || {}) };
+        mergedLocksUpdatedAt = cfgB.lockedCategoriesUpdatedAt || cfgB.updatedAt || '';
+      } else if (lockUA > lockUB) {
+        mergedLocks = { ...(cfgA.lockedCategories || {}) };
+        mergedLocksUpdatedAt = cfgA.lockedCategoriesUpdatedAt || cfgA.updatedAt || '';
+      } else {
+        mergedLocks = {
+          ...(cfgB.lockedCategories || {}),
+          ...(cfgA.lockedCategories || {})
+        };
+        mergedLocksUpdatedAt = cfgA.lockedCategoriesUpdatedAt || cfgB.lockedCategoriesUpdatedAt || uA || uB;
+      }
+
+      if (uB > uA) {
         monthlyBudgets[ym] = {
           ...cfgA,
           ...cfgB,
@@ -315,9 +334,8 @@ export function mergeFamilyStates(stateA, stateB) {
             ...(cfgA.categories || {}),
             ...(cfgB.categories || {})
           },
-          lockedCategories: {
-            ...(cfgB.lockedCategories !== undefined ? cfgB.lockedCategories : (cfgA.lockedCategories || {}))
-          }
+          lockedCategories: mergedLocks,
+          lockedCategoriesUpdatedAt: mergedLocksUpdatedAt
         };
       } else {
         monthlyBudgets[ym] = {
@@ -327,9 +345,8 @@ export function mergeFamilyStates(stateA, stateB) {
             ...(cfgB.categories || {}),
             ...(cfgA.categories || {})
           },
-          lockedCategories: {
-            ...(cfgA.lockedCategories !== undefined ? cfgA.lockedCategories : (cfgB.lockedCategories || {}))
-          }
+          lockedCategories: mergedLocks,
+          lockedCategoriesUpdatedAt: mergedLocksUpdatedAt
         };
       }
     }
@@ -656,20 +673,31 @@ function notifyAsyncStateMerged(mergedState, source = 'sync') {
   }
 }
 
+function stableStringify(val) {
+  if (val === null || val === undefined || typeof val !== 'object') {
+    return JSON.stringify(val);
+  }
+  if (Array.isArray(val)) {
+    return `[${val.map((item) => stableStringify(item)).join(',')}]`;
+  }
+  const keys = Object.keys(val).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(val[k])}`).join(',')}}`;
+}
+
 export function hasSignificantStateDiff(stateA, stateB) {
   if (!stateA || !stateB) return true;
   if (Boolean(stateA.demoCleared) !== Boolean(stateB.demoCleared)) return true;
-  if (JSON.stringify(stateA.transactions || []) !== JSON.stringify(stateB.transactions || [])) return true;
-  if (JSON.stringify(stateA.deletedTransactionIds || {}) !== JSON.stringify(stateB.deletedTransactionIds || {})) return true;
-  if (JSON.stringify(stateA.learnedContacts || {}) !== JSON.stringify(stateB.learnedContacts || {})) return true;
-  if (JSON.stringify(stateA.categories || []) !== JSON.stringify(stateB.categories || [])) return true;
-  if (JSON.stringify(stateA.monthlyBudgets || {}) !== JSON.stringify(stateB.monthlyBudgets || {})) return true;
-  if (JSON.stringify(stateA.fixedTemplates || []) !== JSON.stringify(stateB.fixedTemplates || [])) return true;
-  if (JSON.stringify(stateA.annualSubscriptions || []) !== JSON.stringify(stateB.annualSubscriptions || [])) return true;
-  if (JSON.stringify(stateA.deletedAnnualSubscriptionIds || {}) !== JSON.stringify(stateB.deletedAnnualSubscriptionIds || {})) return true;
-  if (JSON.stringify(stateA.patrimonyItems || []) !== JSON.stringify(stateB.patrimonyItems || [])) return true;
-  if (JSON.stringify(stateA.deletedPatrimonyIds || {}) !== JSON.stringify(stateB.deletedPatrimonyIds || {})) return true;
-  if (JSON.stringify(stateA.familyConfig || {}) !== JSON.stringify(stateB.familyConfig || {})) return true;
+  if (stableStringify(stateA.transactions || []) !== stableStringify(stateB.transactions || [])) return true;
+  if (stableStringify(stateA.deletedTransactionIds || {}) !== stableStringify(stateB.deletedTransactionIds || {})) return true;
+  if (stableStringify(stateA.learnedContacts || {}) !== stableStringify(stateB.learnedContacts || {})) return true;
+  if (stableStringify(stateA.categories || []) !== stableStringify(stateB.categories || [])) return true;
+  if (stableStringify(stateA.monthlyBudgets || {}) !== stableStringify(stateB.monthlyBudgets || {})) return true;
+  if (stableStringify(stateA.fixedTemplates || []) !== stableStringify(stateB.fixedTemplates || [])) return true;
+  if (stableStringify(stateA.annualSubscriptions || []) !== stableStringify(stateB.annualSubscriptions || [])) return true;
+  if (stableStringify(stateA.deletedAnnualSubscriptionIds || {}) !== stableStringify(stateB.deletedAnnualSubscriptionIds || {})) return true;
+  if (stableStringify(stateA.patrimonyItems || []) !== stableStringify(stateB.patrimonyItems || [])) return true;
+  if (stableStringify(stateA.deletedPatrimonyIds || {}) !== stableStringify(stateB.deletedPatrimonyIds || {})) return true;
+  if (stableStringify(stateA.familyConfig || {}) !== stableStringify(stateB.familyConfig || {})) return true;
   return false;
 }
 
@@ -824,7 +852,10 @@ export function resetToFactory(options = {}) {
   });
 }
 
+let lastLocalSaveTimeMs = 0;
+
 export function saveState(state, options = {}) {
+  lastLocalSaveTimeMs = Date.now();
   state.lastUpdated = new Date().toISOString();
   const prefs = loadUserPrefs();
   if (!state.sharedIntegrations) state.sharedIntegrations = {};
@@ -856,8 +887,9 @@ export function saveState(state, options = {}) {
       })
       .then((res) => {
         if (res && res.status === 'ok' && res.payload) {
-          const merged = mergeFamilyStates(state, res.payload);
-          const changed = hasSignificantStateDiff(state, merged);
+          const latestLocal = loadState();
+          const merged = mergeFamilyStates(latestLocal, res.payload);
+          const changed = hasSignificantStateDiff(latestLocal, merged);
           localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
           clearPendingSync('localWifi');
           if (changed) {
@@ -885,6 +917,9 @@ export function saveState(state, options = {}) {
  * Sincroniza y fusiona determinísticamente el estado con el servidor WiFi local (/api/state).
  */
 export async function syncFromLocalWifiServer(currentState) {
+  if (Date.now() - lastLocalSaveTimeMs < 3500) {
+    return null;
+  }
   try {
     const resp = await fetch(`/api/state?t=${Date.now()}`);
     if (!resp.ok) {
@@ -893,8 +928,9 @@ export async function syncFromLocalWifiServer(currentState) {
     }
     const data = await resp.json();
     if (data.status === 'ok' && data.payload && Array.isArray(data.payload.transactions)) {
-      const merged = mergeFamilyStates(currentState, data.payload);
-      const changedVsLocal = hasSignificantStateDiff(currentState, merged);
+      const baseLocal = loadState() || currentState;
+      const merged = mergeFamilyStates(baseLocal, data.payload);
+      const changedVsLocal = hasSignificantStateDiff(baseLocal, merged);
       const changedVsServer = hasSignificantStateDiff(data.payload, merged);
 
       // Guardar en localStorage sin disparar bucle infinito
@@ -998,8 +1034,9 @@ export async function pushStateToGoogleSheets(state, webhookUrl) {
 
   const data = await response.json();
   if (data && data.status === 'ok' && data.payload) {
-    const merged = mergeFamilyStates(state, data.payload);
-    const changed = hasSignificantStateDiff(state, merged);
+    const latestLocal = loadState() || state;
+    const merged = mergeFamilyStates(latestLocal, data.payload);
+    const changed = hasSignificantStateDiff(latestLocal, merged);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
     if (changed) {
       notifyAsyncStateMerged(merged, 'googleSheets');
@@ -1014,6 +1051,9 @@ export async function pushStateToGoogleSheets(state, webhookUrl) {
 }
 
 export async function syncFromCloudGoogleSheets(currentState) {
+  if (Date.now() - lastLocalSaveTimeMs < 5000) {
+    return null;
+  }
   const prefs = loadUserPrefs();
   const webhookUrl =
     prefs.googleSheetsWebhookUrl || currentState?.sharedIntegrations?.googleSheetsWebhookUrl || '';
@@ -1031,8 +1071,9 @@ export async function syncFromCloudGoogleSheets(currentState) {
 
     const result = await response.json();
     if (result && result.status === 'ok' && result.payload && Array.isArray(result.payload.transactions)) {
-      const merged = mergeFamilyStates(currentState, result.payload);
-      const changedVsLocal = hasSignificantStateDiff(currentState, merged);
+      const baseLocal = loadState() || currentState;
+      const merged = mergeFamilyStates(baseLocal, result.payload);
+      const changedVsLocal = hasSignificantStateDiff(baseLocal, merged);
       const changedVsRemote = hasSignificantStateDiff(result.payload, merged);
 
       localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
