@@ -295,7 +295,7 @@ export function mergeFamilyStates(stateA, stateB) {
     }
   }
 
-  // 4. Unir presupuestos mensuales por updatedAt
+  // 4. Unir presupuestos mensuales por updatedAt (conservando unión de categorías)
   const monthlyBudgets = { ...(stateA.monthlyBudgets || {}) };
   for (const [ym, cfgB] of Object.entries(stateB.monthlyBudgets || {})) {
     if (!cfgB || typeof cfgB !== 'object') continue;
@@ -306,7 +306,23 @@ export function mergeFamilyStates(stateA, stateB) {
       const uA = String(cfgA.updatedAt || '');
       const uB = String(cfgB.updatedAt || '');
       if (uB >= uA) {
-        monthlyBudgets[ym] = cfgB;
+        monthlyBudgets[ym] = {
+          ...cfgA,
+          ...cfgB,
+          categories: {
+            ...(cfgA.categories || {}),
+            ...(cfgB.categories || {})
+          }
+        };
+      } else {
+        monthlyBudgets[ym] = {
+          ...cfgB,
+          ...cfgA,
+          categories: {
+            ...(cfgB.categories || {}),
+            ...(cfgA.categories || {})
+          }
+        };
       }
     }
   }
@@ -315,14 +331,18 @@ export function mergeFamilyStates(stateA, stateB) {
   const tplMap = new Map();
   for (const tpl of [...(stateA.fixedTemplates || []), ...(stateB.fixedTemplates || [])]) {
     if (!tpl || !tpl.id) continue;
-    const prevTpl = tplMap.get(tpl.id);
+    const normalizedTpl =
+      tpl.id === 'fix_suscripciones' && tpl.categoryId === 'gustos_personales'
+        ? { ...tpl, categoryId: 'suscripciones' }
+        : tpl;
+    const prevTpl = tplMap.get(normalizedTpl.id);
     if (!prevTpl) {
-      tplMap.set(tpl.id, tpl);
+      tplMap.set(normalizedTpl.id, normalizedTpl);
     } else {
       const uA = String(prevTpl.updatedAt || '');
-      const uB = String(tpl.updatedAt || '');
+      const uB = String(normalizedTpl.updatedAt || '');
       if (uB >= uA) {
-        tplMap.set(tpl.id, tpl);
+        tplMap.set(normalizedTpl.id, normalizedTpl);
       }
     }
   }
@@ -600,6 +620,7 @@ export function hasSignificantStateDiff(stateA, stateB) {
   if (JSON.stringify(stateA.transactions || []) !== JSON.stringify(stateB.transactions || [])) return true;
   if (JSON.stringify(stateA.deletedTransactionIds || {}) !== JSON.stringify(stateB.deletedTransactionIds || {})) return true;
   if (JSON.stringify(stateA.learnedContacts || {}) !== JSON.stringify(stateB.learnedContacts || {})) return true;
+  if (JSON.stringify(stateA.categories || []) !== JSON.stringify(stateB.categories || [])) return true;
   if (JSON.stringify(stateA.monthlyBudgets || {}) !== JSON.stringify(stateB.monthlyBudgets || {})) return true;
   if (JSON.stringify(stateA.fixedTemplates || []) !== JSON.stringify(stateB.fixedTemplates || [])) return true;
   if (JSON.stringify(stateA.patrimonyItems || []) !== JSON.stringify(stateB.patrimonyItems || [])) return true;
@@ -635,11 +656,45 @@ export function loadState() {
   }
 }
 
+function normalizeCategoriesCatalog(rawCategories) {
+  const byId = new Map();
+  DEFAULT_CATEGORIES.forEach((defCat) => {
+    byId.set(defCat.id, { ...defCat });
+  });
+  if (Array.isArray(rawCategories)) {
+    rawCategories.forEach((cat) => {
+      if (cat && cat.id) {
+        const base = byId.get(cat.id) || {};
+        byId.set(cat.id, { ...base, ...cat });
+      }
+    });
+  }
+  const canonicalIds = DEFAULT_CATEGORIES.map((c) => c.id);
+  return Array.from(byId.values()).sort((a, b) => {
+    const idxA = canonicalIds.indexOf(a.id);
+    const idxB = canonicalIds.indexOf(b.id);
+    if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+    if (idxA !== -1) return -1;
+    if (idxB !== -1) return 1;
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  });
+}
+
 export function ensureMonthBudget(state, ym, defaultUpdatedAt = null) {
+  state.categories = normalizeCategoriesCatalog(state.categories);
+
+  if (Array.isArray(state.fixedTemplates)) {
+    state.fixedTemplates = state.fixedTemplates.map((tpl) =>
+      tpl && tpl.id === 'fix_suscripciones' && tpl.categoryId === 'gustos_personales'
+        ? { ...tpl, categoryId: 'suscripciones' }
+        : tpl
+    );
+  }
+
   if (!state.monthlyBudgets) state.monthlyBudgets = {};
   if (!state.monthlyBudgets[ym]) {
     const categories = {};
-    (state.categories || DEFAULT_CATEGORIES).forEach((cat) => {
+    state.categories.forEach((cat) => {
       categories[cat.id] = cat.defaultBudget || 50000;
     });
     state.monthlyBudgets[ym] = {
@@ -649,6 +704,21 @@ export function ensureMonthBudget(state, ym, defaultUpdatedAt = null) {
       updatedAt: defaultUpdatedAt || state.lastUpdated || new Date().toISOString()
     };
   }
+
+  // Asegurar que todos los meses existentes tengan inicializadas las categorías nuevas (ej. gatos_mascotas y suscripciones)
+  for (const mCfg of Object.values(state.monthlyBudgets)) {
+    if (mCfg && typeof mCfg === 'object') {
+      if (!mCfg.categories || typeof mCfg.categories !== 'object') {
+        mCfg.categories = {};
+      }
+      state.categories.forEach((cat) => {
+        if (mCfg.categories[cat.id] === undefined) {
+          mCfg.categories[cat.id] = cat.defaultBudget || 50000;
+        }
+      });
+    }
+  }
+
   return state;
 }
 

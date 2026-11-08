@@ -29,6 +29,20 @@ DEFAULT_FIXED_ORDER = [
     "fix_suscripciones",
 ]
 
+DEFAULT_CATEGORIES_CATALOG = [
+    {"id": "supermercado", "name": "Supermercado y Feria", "icon": "🛒", "color": "#10b981", "group": "esencial", "defaultBudget": 420000, "description": "Lider, Jumbo, Santa Isabel, feria libre, panadería, carnicería"},
+    {"id": "hija", "name": "Hija (Pañales, Leche, Ropa)", "icon": "👶", "color": "#ec4899", "group": "esencial", "defaultBudget": 140000, "description": "Pañales, leche/fórmula, ropa bebé, controles pediátricos, juguetes"},
+    {"id": "vivienda_fijos", "name": "Vivienda y Cuentas Fijas", "icon": "🏠", "color": "#3b82f6", "group": "fijo", "defaultBudget": 850000, "description": "Arriendo/Dividendo, Gastos Comunes, Luz, Agua, Gas, Internet"},
+    {"id": "salud_farmacia", "name": "Salud y Farmacia", "icon": "💊", "color": "#06b6d4", "group": "esencial", "defaultBudget": 80000, "description": "Cruz Verde, Salcobrand, Ahumada, bonos médicos, exámenes"},
+    {"id": "transporte", "name": "Transporte, Auto y Bencina", "icon": "🚗", "color": "#f59e0b", "group": "esencial", "defaultBudget": 130000, "description": "Copec, Shell, TAG, Bip!, Uber/Cabify, estacionamientos"},
+    {"id": "delivery_salidas", "name": "Delivery, Salidas y Cafés", "icon": "🍔", "color": "#ef4444", "group": "estilo_vida", "defaultBudget": 100000, "description": "PedidosYa, Uber Eats, restaurantes, helados, cafés, paseos"},
+    {"id": "hogar_varios", "name": "Hogar, Aseo y Varios", "icon": "🧹", "color": "#8b5cf6", "group": "esencial", "defaultBudget": 60000, "description": "Sodimac, Casaideas, artículos de aseo, reparaciones, regalos"},
+    {"id": "gatos_mascotas", "name": "Gatos (Comida, Arena y Vet)", "icon": "🐱", "color": "#a855f7", "group": "esencial", "defaultBudget": 55000, "description": "Alimento gatos, arena sanitaria, Churu, veterinario, antiparasitarios"},
+    {"id": "suscripciones", "name": "Suscripciones y Apps", "icon": "📺", "color": "#6366f1", "group": "fijo", "defaultBudget": 25000, "description": "Netflix, Spotify, iCloud, YouTube, Disney+, ChatGPT, almacenamiento nube"},
+    {"id": "gustos_personales", "name": "Gustos y Compras Personales", "icon": "🎁", "color": "#f97316", "group": "estilo_vida", "defaultBudget": 80000, "description": "Ropa adultos, Falabella, MercadoLibre, hobbies, antojos"},
+    {"id": "imprevistos", "name": "Imprevistos y Otros", "icon": "🚨", "color": "#64748b", "group": "esencial", "defaultBudget": 50000, "description": "Gastos no planificados o emergencias menores del mes"},
+]
+
 
 def get_local_ip():
     try:
@@ -149,18 +163,64 @@ def merge_family_states(existing, incoming):
             if next_u >= prev_u:
                 learned_contacts[ck] = cval
 
-    # 5. Fusionar presupuestos mensuales por updatedAt
+    # 5. Fusionar presupuestos mensuales por updatedAt (conservando unión de categorías)
     monthly_budgets = dict(existing.get("monthlyBudgets") or {})
     for ym, cfg in (incoming.get("monthlyBudgets") or {}).items():
         if not isinstance(cfg, dict):
             continue
         if ym not in monthly_budgets or not isinstance(monthly_budgets.get(ym), dict):
-            monthly_budgets[ym] = cfg
+            monthly_budgets[ym] = dict(cfg)
         else:
-            prev_u = str(monthly_budgets[ym].get("updatedAt") or "")
+            prev_cfg = monthly_budgets[ym]
+            prev_u = str(prev_cfg.get("updatedAt") or "")
             new_u = str(cfg.get("updatedAt") or "")
+            prev_cats = dict(prev_cfg.get("categories") or {})
+            new_cats = dict(cfg.get("categories") or {})
             if new_u >= prev_u:
-                monthly_budgets[ym] = cfg
+                merged_cats = dict(prev_cats)
+                merged_cats.update(new_cats)
+                merged_m = dict(prev_cfg)
+                merged_m.update(cfg)
+                merged_m["categories"] = merged_cats
+                monthly_budgets[ym] = merged_m
+            else:
+                merged_cats = dict(new_cats)
+                merged_cats.update(prev_cats)
+                merged_m = dict(cfg)
+                merged_m.update(prev_cfg)
+                merged_m["categories"] = merged_cats
+                monthly_budgets[ym] = merged_m
+
+    # Asegurar que todas las categorías del catálogo base estén presentes en categories y monthlyBudgets
+    cats_by_id = {c["id"]: dict(c) for c in DEFAULT_CATEGORIES_CATALOG}
+    for c_list in (existing.get("categories") or [], incoming.get("categories") or []):
+        if isinstance(c_list, list):
+            for c_item in c_list:
+                if isinstance(c_item, dict) and c_item.get("id"):
+                    cid = c_item["id"]
+                    base_c = cats_by_id.get(cid, {})
+                    merged_c = dict(base_c)
+                    merged_c.update(c_item)
+                    cats_by_id[cid] = merged_c
+
+    canonical_ids = [c["id"] for c in DEFAULT_CATEGORIES_CATALOG]
+    merged_categories = sorted(
+        cats_by_id.values(),
+        key=lambda x: (
+            0 if x.get("id") in canonical_ids else 1,
+            canonical_ids.index(x.get("id")) if x.get("id") in canonical_ids else 0,
+            str(x.get("id") or ""),
+        ),
+    )
+
+    for ym, m_cfg in monthly_budgets.items():
+        if isinstance(m_cfg, dict):
+            m_cats = dict(m_cfg.get("categories") or {})
+            for c_def in merged_categories:
+                cid = c_def["id"]
+                if cid not in m_cats:
+                    m_cats[cid] = c_def.get("defaultBudget", 50000)
+            m_cfg["categories"] = m_cats
 
     # 6. Fusionar plantillas de gastos fijos por ID
     tpl_by_id = {}
@@ -168,13 +228,16 @@ def merge_family_states(existing, incoming):
         if not isinstance(t, dict) or not t.get("id"):
             continue
         tid = t["id"]
+        norm_t = dict(t)
+        if tid == "fix_suscripciones" and norm_t.get("categoryId") == "gustos_personales":
+            norm_t["categoryId"] = "suscripciones"
         if tid not in tpl_by_id:
-            tpl_by_id[tid] = t
+            tpl_by_id[tid] = norm_t
         else:
             prev_u = str(tpl_by_id[tid].get("updatedAt") or "")
-            new_u = str(t.get("updatedAt") or "")
+            new_u = str(norm_t.get("updatedAt") or "")
             if new_u >= prev_u:
-                tpl_by_id[tid] = t
+                tpl_by_id[tid] = norm_t
 
     merged_templates = sorted(tpl_by_id.values(), key=_fixed_template_sort_key)
 
@@ -249,7 +312,7 @@ def merge_family_states(existing, incoming):
         {
             "version": 3,
             "familyConfig": merged_fc,
-            "categories": incoming.get("categories") or existing.get("categories"),
+            "categories": merged_categories,
             "monthlyBudgets": monthly_budgets,
             "fixedTemplates": merged_templates,
             "transactions": merged_txs,

@@ -43,6 +43,8 @@ export const RECEIPT_JSON_SCHEMA = {
             enum: [
               'supermercado',
               'hija',
+              'gatos_mascotas',
+              'suscripciones',
               'salud_farmacia',
               'transporte',
               'delivery_salidas',
@@ -155,8 +157,10 @@ Extrae el nombre del comercio, la fecha (YYYY-MM-DD) y el monto total pagado.
 Además, agrupa los productos comprados según estas categorías familiares para que podamos dividir el gasto:
 - "supermercado": alimentos generales, abarrotes, verduras, carnes, lácteos familiares.
 - "hija": pañales, toallitas húmedas, leche de fórmula/nan/nido infantil, colados, ropa o artículos de bebé/niña.
+- "gatos_mascotas": comida/alimento para gatos o mascotas, arena sanitaria, Churu, snacks o artículos veterinarios.
 - "salud_farmacia": medicamentos, vitaminas, termómetros, farmacia.
 - "hogar_varios": detergente, artículos de limpieza/aseo hogar, ampolletas, menaje.
+- "suscripciones": membresías o suscripciones digitales.
 - "gustos_personales": alcohol, vinos, cervezas, snacks/antojos caros, cosmética, juguetes o compras no esenciales.
 - "delivery_salidas": comida preparada de restaurante o cafetería.
 Asegúrate de que la suma de "splits" cuadre exactamente con "totalAmount".`;
@@ -207,6 +211,8 @@ const STATEMENT_CLASSIFY_SCHEMA = {
             enum: [
               'supermercado',
               'hija',
+              'gatos_mascotas',
+              'suscripciones',
               'salud_farmacia',
               'transporte',
               'delivery_salidas',
@@ -246,7 +252,9 @@ Categorías permitidas:
 - "transporte": transporte público (Red Movilidad, Metro, Bip), bencineras, autopistas, estacionamientos, Uber/Cabify.
 - "delivery_salidas": restaurantes, cafeterías, bares, heladerías, apps de delivery.
 - "hogar_varios": ferreterías, artículos de casa, aseo, lavandería.
-- "gustos_personales": suscripciones digitales (Apple, Netflix, Spotify), licores/botillerías, tiendas de ropa/retail, compras personales.
+- "gatos_mascotas": tiendas de mascotas (SuperZoo, Pet Happy, Braloy, Laika), alimento o arena para gatos, clínicas veterinarias.
+- "suscripciones": suscripciones digitales y apps (Apple, iCloud, Netflix, Spotify, YouTube, Disney+, ChatGPT, almacenamiento nube).
+- "gustos_personales": licores/botillerías, tiendas de ropa/retail, compras personales.
 - "vivienda_fijos": cuentas básicas (luz, agua, gas, internet, telecomunicaciones, gastos comunes, arriendo).
 - "imprevistos": otros no identificables.
 

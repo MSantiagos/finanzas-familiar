@@ -1,7 +1,7 @@
 import {
   PAYMENT_METHODS,
   SAMPLE_BANK_STATEMENT_TEXT
-} from './data/defaults.js?v=12';
+} from './data/defaults.js?v=13';
 import {
   loadState,
   saveState,
@@ -17,7 +17,7 @@ import {
   setupAutoOnlineSync,
   exportStateToJsonString,
   importStateFromJsonString
-} from './services/storage.js?v=12';
+} from './services/storage.js?v=13';
 import {
   parseBankStatementText,
   reconcileStatementRows,
@@ -25,19 +25,19 @@ import {
   formatLiveCLPInput,
   normalizeContactKey,
   extractContactDisplayName
-} from './services/reconciler.js?v=12';
+} from './services/reconciler.js?v=13';
 import {
   scanReceiptWithGemini,
   classifyStatementRowsWithGemini,
   getDemoScannedReceipt,
   generateMonthlyFamilyAuditWithGemini
-} from './services/geminiScanner.js?v=12';
-import { exportStateToExcel } from './services/excelExport.js?v=12';
+} from './services/geminiScanner.js?v=13';
+import { exportStateToExcel } from './services/excelExport.js?v=13';
 import {
   parseQuickNaturalExpense,
   buildInstallmentTransactions,
   getQuickPresetsForAuthor
-} from './services/smartInput.js?v=12';
+} from './services/smartInput.js?v=13';
 import {
   calculateMonthlyFinancialSummary,
   calculateBurnRateAndProjection,
@@ -50,7 +50,7 @@ import {
   calculateMultiMonthComparison,
   clonePreviousMonthBudget,
   buildCoupleWhatsAppMessages
-} from './domain/financialEngine.js?v=12';
+} from './domain/financialEngine.js?v=13';
 
 // Estado global en memoria de la aplicación
 let appState = loadState();

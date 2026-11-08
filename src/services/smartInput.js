@@ -202,6 +202,54 @@ const EXTRA_CATEGORY_KEYWORDS = [
     ]
   },
   {
+    categoryId: 'gatos_mascotas',
+    keywords: [
+      'arena sanitaria',
+      'arena gatos',
+      'arena gato',
+      'arena',
+      'comida gatos',
+      'comida gato',
+      'alimento gatos',
+      'alimento gato',
+      'pellets gatos',
+      'churu',
+      'churus',
+      'lata gato',
+      'latas gato',
+      'sobrecito gato',
+      'sobres gato',
+      'veterinario',
+      'veterinaria',
+      'pipeta',
+      'antiparasitario',
+      'rascador',
+      'gatitos',
+      'gatito',
+      'gatos',
+      'gata',
+      'gato',
+      'mascotas',
+      'mascota'
+    ]
+  },
+  {
+    categoryId: 'suscripciones',
+    keywords: [
+      'suscripcion',
+      'suscripciones',
+      'streaming',
+      'membresia',
+      'icloud',
+      'netflix',
+      'spotify',
+      'youtube',
+      'disney',
+      'chatgpt',
+      'almacenamiento nube'
+    ]
+  },
+  {
     categoryId: 'gustos_personales',
     keywords: [
       'polera',
@@ -219,7 +267,6 @@ const EXTRA_CATEGORY_KEYWORDS = [
       'gym',
       'padel',
       'futbol',
-      'suscripcion',
       'libro'
     ]
   },
@@ -306,6 +353,26 @@ const GENERIC_ITEM_KEYWORDS = new Set([
   'internet',
   'ropa',
   'zapatos',
+  'arena sanitaria',
+  'arena gato',
+  'arena gatos',
+  'comida gato',
+  'comida gatos',
+  'alimento gato',
+  'alimento gatos',
+  'veterinaria',
+  'clinica veterinaria',
+  'clínica veterinaria',
+  'pipeta',
+  'antiparasitario',
+  'rascador',
+  'mascota',
+  'mascotas',
+  'gatito',
+  'gatitos',
+  'gata',
+  'gato',
+  'gatos',
   'imprevisto',
   'emergencia',
   'multa'
@@ -737,6 +804,8 @@ function resolvePaymentMethod({
       isBigSupermarketPurchase ||
       categoryId === 'salud_farmacia' ||
       categoryId === 'hija' ||
+      categoryId === 'gatos_mascotas' ||
+      categoryId === 'suscripciones' ||
       categoryId === 'transporte' ||
       categoryId === 'hogar_varios' ||
       categoryId === 'gustos_personales' ||

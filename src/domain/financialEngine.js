@@ -13,6 +13,8 @@ const FALLBACK_CATEGORIES = [
   { id: 'transporte', name: 'Transporte, Auto y Bencina', icon: '🚗', group: 'esencial', defaultBudget: 130000 },
   { id: 'delivery_salidas', name: 'Delivery, Salidas y Cafés', icon: '🍔', group: 'estilo_vida', defaultBudget: 100000 },
   { id: 'hogar_varios', name: 'Hogar, Aseo y Varios', icon: '🧹', group: 'esencial', defaultBudget: 60000 },
+  { id: 'gatos_mascotas', name: 'Gatos (Comida, Arena y Vet)', icon: '🐱', group: 'esencial', defaultBudget: 55000 },
+  { id: 'suscripciones', name: 'Suscripciones y Apps', icon: '📺', group: 'fijo', defaultBudget: 25000 },
   { id: 'gustos_personales', name: 'Gustos y Compras Personales', icon: '🎁', group: 'estilo_vida', defaultBudget: 80000 },
   { id: 'imprevistos', name: 'Imprevistos y Otros', icon: '🚨', group: 'esencial', defaultBudget: 50000 }
 ];
@@ -1203,9 +1205,10 @@ function matchSubscriptionService(tx) {
     return { key: 'max', name: 'Max (HBO)' };
   }
 
-  // Plantillas fijas de suscripciones o notas explícitas de suscripción/membresía
+  // Plantillas fijas de suscripciones, categoría 'suscripciones' o notas explícitas de suscripción/membresía
   if (
     tx?.isSubscription === true ||
+    tx?.categoryId === 'suscripciones' ||
     norm.includes('suscripcion') ||
     norm.includes('membresia') ||
     String(tx?.fixedTemplateId || '').toLowerCase().includes('sub')

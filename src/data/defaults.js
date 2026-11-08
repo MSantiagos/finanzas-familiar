@@ -64,6 +64,24 @@ export const DEFAULT_CATEGORIES = [
     description: 'Sodimac, Casaideas, artículos de aseo, reparaciones, regalos'
   },
   {
+    id: 'gatos_mascotas',
+    name: 'Gatos (Comida, Arena y Vet)',
+    icon: '🐱',
+    color: '#a855f7',
+    group: 'esencial',
+    defaultBudget: 55000,
+    description: 'Alimento gatos, arena sanitaria, Churu, veterinario, antiparasitarios'
+  },
+  {
+    id: 'suscripciones',
+    name: 'Suscripciones y Apps',
+    icon: '📺',
+    color: '#6366f1',
+    group: 'fijo',
+    defaultBudget: 25000,
+    description: 'Netflix, Spotify, iCloud, YouTube, Disney+, ChatGPT, almacenamiento nube'
+  },
+  {
     id: 'gustos_personales',
     name: 'Gustos y Compras Personales',
     icon: '🎁',
@@ -185,7 +203,7 @@ export const DEFAULT_FIXED_TEMPLATE = [
   {
     id: 'fix_suscripciones',
     name: 'Suscripciones (Streaming / Nube / Spotify)',
-    categoryId: 'gustos_personales',
+    categoryId: 'suscripciones',
     estimatedAmount: 18000,
     defaultPaymentMethod: 'cmr_falabella',
     dayOfMonth: 25
@@ -279,14 +297,25 @@ export const CHILE_MERCHANT_RULES = [
     ]
   },
   {
+    categoryId: 'gatos_mascotas',
+    keywords: [
+      'superzoo', 'pet happy', 'pethappy', 'braloy', 'laika', 'dr pet', 'dr. pet', 'tus mascotas', 'amigales', 'pichichus', 'club de perros y gatos',
+      'veterinaria', 'clinica veterinaria', 'clínica veterinaria', 'hospital veterinario', 'consulta veterinaria',
+      'royal canin', 'pro plan', 'proplan', 'purina', 'hills', "hill's", 'acana', 'orijen', 'nutragold', 'taste of the wild', 'bravery', 'fit formula', 'fit fórmula', 'nomade', 'nómade',
+      'master cat', 'mastercat', 'cat chow', 'catchow', 'whiskas', 'felix', 'fancy feast', 'sheba', 'churu', 'inaba', 'wanpy',
+      'arena sanitaria', 'arena gato', 'arena gatos', 'arena aglutinante', 'odour buster', 'america litter', 'easy clean', 'sanicat', 'cat it', 'catit',
+      'pipeta', 'bravecto', 'revolution', 'frontline', 'antiparasitario', 'desparasitante', 'rascador',
+      'comida gato', 'comida gatos', 'alimento gato', 'alimento gatos', 'mascota', 'mascotas', 'gatito', 'gatitos', 'gata', 'gato', 'gatos', 'petshop', 'pet shop', 'master dog'
+    ]
+  },
+  {
     categoryId: 'hogar_varios',
     keywords: [
       'sodimac', 'homecenter', 'constructor', 'easy', 'cencosud easy', 'imperial', 'construmart', 'mk hogar', 'comercial mk', 'mk',
       'casaideas', 'casa ideas', 'ikea', 'homy', 'rosen', 'colchones cic', 'muebles cic', 'cic', 'cannon', 'mashini', 'zara home', 'h&m home',
       'kitchen center', 'el volcan', 'el volcán', 'ursus trotter', 'thomas', 'sindelen', 'karcher',
       'preunic', 'maicao', 'pichara', 'dbs beauty', 'sally beauty', 'the body shop', 'lush', 'daiso', 'miniso', 'mumuso', 'todomoda',
-      'lavaseco', 'lavanderia', 'lavandería', 'tintoreria', 'cerrajeria', 'cerrajería', 'gasfiteria', 'gasfitería', 'ferreteria', 'ferretería',
-      'superzoo', 'pet happy', 'pethappy', 'braloy', 'laika', 'veterinaria', 'clinica veterinaria', 'mascotas', 'royal canin', 'master dog'
+      'lavaseco', 'lavanderia', 'lavandería', 'tintoreria', 'cerrajeria', 'cerrajería', 'gasfiteria', 'gasfitería', 'ferreteria', 'ferretería'
     ]
   },
   {
@@ -302,6 +331,16 @@ export const CHILE_MERCHANT_RULES = [
     ]
   },
   {
+    categoryId: 'suscripciones',
+    keywords: [
+      'netflix', 'spotify', 'disney+', 'disney plus', 'disney', 'hbo max', 'hbomax', 'max.com', 'amazon prime', 'prime video', 'paramount+', 'paramount plus', 'crunchyroll', 'mubi', 'apple tv', 'tnt sports', 'estadio tnt', 'dazn', 'f1 tv',
+      'apple.com/bill', 'apple.com', 'itunes', 'icloud', 'icloud+', 'google one', 'google *', 'google play', 'youtube premium', 'youtube music', 'youtubepremium', 'youtube',
+      'chatgpt', 'openai', 'claude', 'anthropic', 'midjourney', 'cursor', 'copilot', 'github', 'perplexity',
+      'microsoft 365', 'office 365', 'onedrive', 'dropbox', 'adobe', 'canva', 'notion', 'zoom', 'duolingo', 'strava',
+      'playstation', 'psn', 'playstation network', 'xbox', 'game pass', 'gamepass', 'steam', 'steampowered', 'nintendo', 'epic games', 'riot games', 'roblox', 'patreon', 'twitch'
+    ]
+  },
+  {
     categoryId: 'gustos_personales',
     keywords: [
       'falabella', 'paris', 'ripley', 'abcdin', 'hites', 'la polar', 'corona', 'tricot', 'fashions park',
@@ -312,10 +351,7 @@ export const CHILE_MERCHANT_RULES = [
       'shein', 'aliexpress', 'ali express', 'temu', 'amazon', 'mercadolibre', 'mercado libre', 'mercadopago', 'mercado pago', 'merpago',
       'casa royal', 'pc factory', 'pcfactory', 'sp digital', 'spdigital', 'wei.cl', 'wei', 'maconline', 'mac online', 'aufbau', 'microplay', 'zmart', 'weplay',
       'feria chilena del libro', 'feria del libro', 'antartica libros', 'antártica', 'libreria antartica', 'contrapunto', 'buscalibre', 'que leo',
-      'botilleria', 'botillería', 'liquidos', 'líquidos', 'el cielo', 'booz', 'booz.cl', 'vinoteca', 'la vinoteca', 'la cav', 'supermercado diez', 'licores',
-      'netflix', 'spotify', 'disney+', 'disney plus', 'disney', 'hbo max', 'hbomax', 'max.com', 'max', 'amazon prime', 'prime video',
-      'apple.com/bill', 'icloud', 'google one', 'google *', 'youtube premium', 'youtube', 'chatgpt', 'openai', 'claude', 'anthropic',
-      'playstation', 'psn', 'xbox', 'steam', 'steampowered', 'nintendo', 'epic games', 'riot games', 'roblox'
+      'botilleria', 'botillería', 'liquidos', 'líquidos', 'el cielo', 'booz', 'booz.cl', 'vinoteca', 'la vinoteca', 'la cav', 'supermercado diez', 'licores'
     ]
   },
   {
