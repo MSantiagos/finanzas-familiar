@@ -39,6 +39,7 @@ DEFAULT_CATEGORIES_CATALOG = [
     {"id": "hogar_varios", "name": "Hogar, Aseo y Varios", "icon": "🧹", "color": "#8b5cf6", "group": "esencial", "defaultBudget": 70000, "description": "Sodimac, Casaideas, artículos de aseo, reparaciones, regalos"},
     {"id": "gatos_mascotas", "name": "Gatos (Comida, Arena y Vet)", "icon": "🐱", "color": "#a855f7", "group": "esencial", "defaultBudget": 65000, "description": "Alimento gatos, arena sanitaria, Churu, veterinario, antiparasitarios"},
     {"id": "suscripciones", "name": "Suscripciones y Apps", "icon": "📺", "color": "#6366f1", "group": "fijo", "defaultBudget": 35000, "description": "Netflix, Spotify, iCloud, YouTube, Disney+, ChatGPT, almacenamiento nube"},
+    {"id": "suscripciones_anuales", "name": "Suscripciones Anuales (Renovación del Mes)", "icon": "📅", "color": "#0ea5e9", "group": "fijo", "defaultBudget": 0, "isDynamicAnnual": True, "description": "Cobros de renovación anual programados en el mes correspondiente"},
     {"id": "gustos_personales", "name": "Gustos y Compras Personales", "icon": "🎁", "color": "#f97316", "group": "estilo_vida", "defaultBudget": 85000, "description": "Ropa adultos, Falabella, MercadoLibre, hobbies, antojos"},
     {"id": "imprevistos", "name": "Imprevistos y Otros", "icon": "🚨", "color": "#64748b", "group": "esencial", "defaultBudget": 60000, "description": "Gastos no planificados o emergencias menores del mes"},
 ]
@@ -176,12 +177,15 @@ def merge_family_states(existing, incoming):
             new_u = str(cfg.get("updatedAt") or "")
             prev_cats = dict(prev_cfg.get("categories") or {})
             new_cats = dict(cfg.get("categories") or {})
+            prev_locks = dict(prev_cfg.get("lockedCategories") or {})
+            new_locks = dict(cfg.get("lockedCategories") or {}) if "lockedCategories" in cfg else prev_locks
             if new_u >= prev_u:
                 merged_cats = dict(prev_cats)
                 merged_cats.update(new_cats)
                 merged_m = dict(prev_cfg)
                 merged_m.update(cfg)
                 merged_m["categories"] = merged_cats
+                merged_m["lockedCategories"] = new_locks
                 monthly_budgets[ym] = merged_m
             else:
                 merged_cats = dict(new_cats)
@@ -189,6 +193,7 @@ def merge_family_states(existing, incoming):
                 merged_m = dict(cfg)
                 merged_m.update(prev_cfg)
                 merged_m["categories"] = merged_cats
+                merged_m["lockedCategories"] = prev_locks
                 monthly_budgets[ym] = merged_m
 
     # Asegurar que todas las categorías del catálogo base estén presentes en categories y monthlyBudgets
@@ -284,6 +289,35 @@ def merge_family_states(existing, incoming):
         else:
             merged_fc = incoming_fc
 
+    # 6d. Fusionar Suscripciones Anuales Dinámicas (annualSubscriptions + deletedAnnualSubscriptionIds)
+    deleted_annual = dict(existing.get("deletedAnnualSubscriptionIds") or {})
+    for sub_id, del_ts in (incoming.get("deletedAnnualSubscriptionIds") or {}).items():
+        prev_ts = str(deleted_annual.get(sub_id, "") or "")
+        if not prev_ts or str(del_ts) >= prev_ts:
+            deleted_annual[sub_id] = del_ts
+
+    annual_by_id = {}
+    for sub in (existing.get("annualSubscriptions") or []) + (incoming.get("annualSubscriptions") or []):
+        if not isinstance(sub, dict) or not sub.get("id"):
+            continue
+        sid = sub["id"]
+        if sid in deleted_annual:
+            continue
+        if sid not in annual_by_id:
+            annual_by_id[sid] = dict(sub)
+        else:
+            prev_u = str(annual_by_id[sid].get("updatedAt") or annual_by_id[sid].get("createdAt") or "")
+            new_u = str(sub.get("updatedAt") or sub.get("createdAt") or "")
+            if new_u >= prev_u:
+                merged_sub = dict(annual_by_id[sid])
+                merged_sub.update(sub)
+                annual_by_id[sid] = merged_sub
+
+    merged_annual_subs = sorted(
+        annual_by_id.values(),
+        key=lambda x: (int(x.get("billingMonth") or 1), str(x.get("name") or ""), str(x.get("id") or "")),
+    )
+
     # 7. Fusionar integraciones compartidas conservando claves no vacías
     shared_integrations = {
         "googleSheetsWebhookUrl": "",
@@ -315,6 +349,8 @@ def merge_family_states(existing, incoming):
             "categories": merged_categories,
             "monthlyBudgets": monthly_budgets,
             "fixedTemplates": merged_templates,
+            "annualSubscriptions": merged_annual_subs,
+            "deletedAnnualSubscriptionIds": deleted_annual,
             "transactions": merged_txs,
             "deletedTransactionIds": deleted_map,
             "patrimonyItems": merged_patrimony,

@@ -179,6 +179,8 @@ export function createDefaultState() {
       }
     },
     fixedTemplates: DEFAULT_FIXED_TEMPLATE.map((t) => ({ ...t })),
+    annualSubscriptions: [],
+    deletedAnnualSubscriptionIds: {},
     transactions: buildInitialSampleTransactions(ym),
     deletedTransactionIds: {},
     patrimonyItems: [],
@@ -312,6 +314,9 @@ export function mergeFamilyStates(stateA, stateB) {
           categories: {
             ...(cfgA.categories || {}),
             ...(cfgB.categories || {})
+          },
+          lockedCategories: {
+            ...(cfgB.lockedCategories !== undefined ? cfgB.lockedCategories : (cfgA.lockedCategories || {}))
           }
         };
       } else {
@@ -321,6 +326,9 @@ export function mergeFamilyStates(stateA, stateB) {
           categories: {
             ...(cfgB.categories || {}),
             ...(cfgA.categories || {})
+          },
+          lockedCategories: {
+            ...(cfgA.lockedCategories !== undefined ? cfgA.lockedCategories : (cfgB.lockedCategories || {}))
           }
         };
       }
@@ -401,6 +409,38 @@ export function mergeFamilyStates(stateA, stateB) {
     }
   }
 
+  // 5d. Unir Suscripciones Anuales Dinámicas (annualSubscriptions + deletedAnnualSubscriptionIds)
+  const deletedAnnualSubscriptionIds = { ...(stateA.deletedAnnualSubscriptionIds || {}) };
+  for (const [subId, delTs] of Object.entries(stateB.deletedAnnualSubscriptionIds || {})) {
+    const prevTs = String(deletedAnnualSubscriptionIds[subId] || '');
+    if (!prevTs || String(delTs) >= prevTs) {
+      deletedAnnualSubscriptionIds[subId] = delTs;
+    }
+  }
+
+  const annualSubMap = new Map();
+  for (const sub of [...(stateA.annualSubscriptions || []), ...(stateB.annualSubscriptions || [])]) {
+    if (!sub || !sub.id) continue;
+    if (deletedAnnualSubscriptionIds[sub.id]) continue;
+    const prevSub = annualSubMap.get(sub.id);
+    if (!prevSub) {
+      annualSubMap.set(sub.id, { ...sub });
+    } else {
+      const uA = String(prevSub.updatedAt || prevSub.createdAt || '');
+      const uB = String(sub.updatedAt || sub.createdAt || '');
+      if (uB >= uA) {
+        annualSubMap.set(sub.id, { ...prevSub, ...sub });
+      }
+    }
+  }
+
+  const mergedAnnualSubscriptions = Array.from(annualSubMap.values()).sort(
+    (a, b) =>
+      Number(a.billingMonth || 1) - Number(b.billingMonth || 1) ||
+      String(a.name || '').localeCompare(String(b.name || '')) ||
+      String(a.id || '').localeCompare(String(b.id || ''))
+  );
+
   // 6. Unir credenciales compartidas en red familiar conservando claves no vacías
   const sharedIntegrations = {
     googleSheetsWebhookUrl: '',
@@ -453,6 +493,8 @@ export function mergeFamilyStates(stateA, stateB) {
       categories: stateB.categories || stateA.categories || DEFAULT_CATEGORIES,
       monthlyBudgets,
       fixedTemplates: mergedTemplates,
+      annualSubscriptions: mergedAnnualSubscriptions,
+      deletedAnnualSubscriptionIds,
       transactions: mergedTransactions,
       deletedTransactionIds,
       patrimonyItems: mergedPatrimonyItems,
@@ -623,6 +665,8 @@ export function hasSignificantStateDiff(stateA, stateB) {
   if (JSON.stringify(stateA.categories || []) !== JSON.stringify(stateB.categories || [])) return true;
   if (JSON.stringify(stateA.monthlyBudgets || {}) !== JSON.stringify(stateB.monthlyBudgets || {})) return true;
   if (JSON.stringify(stateA.fixedTemplates || []) !== JSON.stringify(stateB.fixedTemplates || [])) return true;
+  if (JSON.stringify(stateA.annualSubscriptions || []) !== JSON.stringify(stateB.annualSubscriptions || [])) return true;
+  if (JSON.stringify(stateA.deletedAnnualSubscriptionIds || {}) !== JSON.stringify(stateB.deletedAnnualSubscriptionIds || {})) return true;
   if (JSON.stringify(stateA.patrimonyItems || []) !== JSON.stringify(stateB.patrimonyItems || [])) return true;
   if (JSON.stringify(stateA.deletedPatrimonyIds || {}) !== JSON.stringify(stateB.deletedPatrimonyIds || {})) return true;
   if (JSON.stringify(stateA.familyConfig || {}) !== JSON.stringify(stateB.familyConfig || {})) return true;
@@ -640,6 +684,8 @@ export function loadState() {
     const parsed = JSON.parse(raw);
     if (!parsed.learnedContacts) parsed.learnedContacts = {};
     if (!parsed.deletedTransactionIds) parsed.deletedTransactionIds = {};
+    if (!Array.isArray(parsed.annualSubscriptions)) parsed.annualSubscriptions = [];
+    if (!parsed.deletedAnnualSubscriptionIds) parsed.deletedAnnualSubscriptionIds = {};
     if (!Array.isArray(parsed.patrimonyItems)) parsed.patrimonyItems = [];
     if (!parsed.deletedPatrimonyIds) parsed.deletedPatrimonyIds = {};
     if (!parsed.sharedIntegrations) {
@@ -692,30 +738,48 @@ export function ensureMonthBudget(state, ym, defaultUpdatedAt = null) {
   }
 
   if (!state.monthlyBudgets) state.monthlyBudgets = {};
+  if (!Array.isArray(state.annualSubscriptions)) state.annualSubscriptions = [];
+  if (!state.deletedAnnualSubscriptionIds) state.deletedAnnualSubscriptionIds = {};
+
   if (!state.monthlyBudgets[ym]) {
     const categories = {};
     state.categories.forEach((cat) => {
-      categories[cat.id] = cat.defaultBudget || 50000;
+      categories[cat.id] = cat.defaultBudget !== undefined ? cat.defaultBudget : 50000;
     });
     state.monthlyBudgets[ym] = {
       incomeTarget: state.familyConfig?.monthlyIncomeTarget || 2350000,
       savingsGoal: state.familyConfig?.monthlySavingsGoal || 250000,
       categories,
+      lockedCategories: {},
       updatedAt: defaultUpdatedAt || state.lastUpdated || new Date().toISOString()
     };
   }
 
-  // Asegurar que todos los meses existentes tengan inicializadas las categorías nuevas (ej. gatos_mascotas y suscripciones)
-  for (const mCfg of Object.values(state.monthlyBudgets)) {
+  // Asegurar que todos los meses existentes tengan inicializadas las categorías nuevas (ej. gatos_mascotas, suscripciones, suscripciones_anuales)
+  for (const [mKey, mCfg] of Object.entries(state.monthlyBudgets)) {
     if (mCfg && typeof mCfg === 'object') {
       if (!mCfg.categories || typeof mCfg.categories !== 'object') {
         mCfg.categories = {};
       }
+      if (!mCfg.lockedCategories || typeof mCfg.lockedCategories !== 'object') {
+        mCfg.lockedCategories = {};
+      }
       state.categories.forEach((cat) => {
         if (mCfg.categories[cat.id] === undefined) {
-          mCfg.categories[cat.id] = cat.defaultBudget || 50000;
+          mCfg.categories[cat.id] = cat.defaultBudget !== undefined ? cat.defaultBudget : 50000;
         }
       });
+      // Sincronizar monto dinámico del mes para suscripciones_anuales si corresponde
+      const mParts = String(mKey || '').split('-');
+      const mNum = Number(mParts[1] || 0);
+      if (mNum >= 1 && mNum <= 12) {
+        const dueAnnual = (state.annualSubscriptions || [])
+          .filter((s) => s && s.active !== false && Number(s.billingMonth) === mNum)
+          .reduce((acc, s) => acc + Math.max(0, Math.round(Number(s.amount) || 0)), 0);
+        if (dueAnnual === 0 && Number(mCfg.categories.suscripciones_anuales || 0) === 50000) {
+          mCfg.categories.suscripciones_anuales = 0;
+        }
+      }
     }
   }
 

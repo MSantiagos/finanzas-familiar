@@ -15,6 +15,7 @@ const FALLBACK_CATEGORIES = [
   { id: 'hogar_varios', name: 'Hogar, Aseo y Varios', icon: '🧹', group: 'esencial', defaultBudget: 70000 },
   { id: 'gatos_mascotas', name: 'Gatos (Comida, Arena y Vet)', icon: '🐱', group: 'esencial', defaultBudget: 65000 },
   { id: 'suscripciones', name: 'Suscripciones y Apps', icon: '📺', group: 'fijo', defaultBudget: 35000 },
+  { id: 'suscripciones_anuales', name: 'Suscripciones Anuales (Renovación del Mes)', icon: '📅', group: 'fijo', defaultBudget: 0, isDynamicAnnual: true },
   { id: 'gustos_personales', name: 'Gustos y Compras Personales', icon: '🎁', group: 'estilo_vida', defaultBudget: 85000 },
   { id: 'imprevistos', name: 'Imprevistos y Otros', icon: '🚨', group: 'esencial', defaultBudget: 60000 }
 ];
@@ -1205,10 +1206,11 @@ function matchSubscriptionService(tx) {
     return { key: 'max', name: 'Max (HBO)' };
   }
 
-  // Plantillas fijas de suscripciones, categoría 'suscripciones' o notas explícitas de suscripción/membresía
+  // Plantillas fijas de suscripciones, categoría 'suscripciones'/'suscripciones_anuales' o notas explícitas de suscripción/membresía
   if (
     tx?.isSubscription === true ||
     tx?.categoryId === 'suscripciones' ||
+    tx?.categoryId === 'suscripciones_anuales' ||
     norm.includes('suscripcion') ||
     norm.includes('membresia') ||
     String(tx?.fixedTemplateId || '').toLowerCase().includes('sub')
@@ -1653,12 +1655,20 @@ export function distributeBudgetProportionally({
   const catList = Array.isArray(categories) && categories.length > 0 ? categories : DEFAULT_CATEGORIES;
   const lockedSet = new Set(Array.isArray(lockedCategoryIds) ? lockedCategoryIds : []);
 
+  // La categoría dinámica 'suscripciones_anuales' siempre mantiene el monto programado de sus renovaciones del mes
+  for (const cat of catList) {
+    if (cat.id === 'suscripciones_anuales' || cat.isDynamicAnnual) {
+      lockedSet.add(cat.id);
+    }
+  }
+
   const allocations = {};
   let lockedSum = 0;
 
   for (const cat of catList) {
     if (lockedSet.has(cat.id)) {
-      const val = Math.max(0, Math.round(Number(currentAmounts?.[cat.id] ?? cat.defaultBudget ?? 0)));
+      const fallbackVal = cat.id === 'suscripciones_anuales' || cat.isDynamicAnnual ? 0 : (cat.defaultBudget ?? 0);
+      const val = Math.max(0, Math.round(Number(currentAmounts?.[cat.id] ?? fallbackVal)));
       allocations[cat.id] = val;
       lockedSum += val;
     }
@@ -1736,6 +1746,119 @@ export function distributeBudgetProportionally({
     difference,
     allocations,
     percentages
+  };
+}
+
+/**
+ * Calcula las Suscripciones Anuales activas del hogar y filtra cuáles corresponden al mes `activeYearMonth` ("YYYY-MM").
+ */
+export function getAnnualSubscriptionsForMonth(state = {}, activeYearMonth = '') {
+  const rawList = Array.isArray(state?.annualSubscriptions) ? state.annualSubscriptions : [];
+  const deletedMap = state?.deletedAnnualSubscriptionIds && typeof state.deletedAnnualSubscriptionIds === 'object'
+    ? state.deletedAnnualSubscriptionIds
+    : {};
+
+  const ym = typeof activeYearMonth === 'string' && /^\d{4}-\d{2}$/.test(activeYearMonth)
+    ? activeYearMonth
+    : resolveCalendarProgress().activeYearMonth;
+  const monthNumber = parseInt(ym.split('-')[1], 10) || 1;
+
+  const allItems = rawList
+    .filter((item) => item && item.id && !deletedMap[item.id] && item.active !== false)
+    .map((item) => ({
+      id: String(item.id),
+      name: String(item.name || 'Suscripción Anual').trim(),
+      amount: Math.max(0, Math.round(Number(item.amount || 0))),
+      billingMonth: Math.min(12, Math.max(1, Math.round(Number(item.billingMonth || 1)))),
+      billingDay: Math.min(31, Math.max(1, Math.round(Number(item.billingDay || 15)))),
+      paymentMethod: String(item.paymentMethod || 'cmr_falabella'),
+      note: String(item.note || '').trim(),
+      createdAt: item.createdAt || null,
+      updatedAt: item.updatedAt || null
+    }))
+    .filter((item) => item.amount > 0)
+    .sort((a, b) => a.billingMonth - b.billingMonth || b.amount - a.amount || a.name.localeCompare(b.name, 'es'));
+
+  const dueThisMonth = allItems.filter((item) => item.billingMonth === monthNumber);
+  const totalDueInMonth = dueThisMonth.reduce((acc, item) => acc + item.amount, 0);
+  const totalAnnualCommitment = allItems.reduce((acc, item) => acc + item.amount, 0);
+
+  return {
+    yearMonth: ym,
+    monthNumber,
+    allItems,
+    dueThisMonth,
+    totalDueInMonth,
+    totalAnnualCommitment,
+    monthlyEquivalent: Math.round(totalAnnualCommitment / 12)
+  };
+}
+
+/**
+ * Sincroniza el presupuesto dinámico de `suscripciones_anuales` en el mes `targetYearMonth`:
+ * - Si hay suscripciones anuales que vencen en ese mes, asigna su suma exacta a `suscripciones_anuales`
+ *   y descuenta ese monto proporcionalmente entre todos los presupuestos que NO estén fijados (`lockedCategories`).
+ * - Si no hay suscripciones anuales en ese mes (`totalDueInMonth === 0`), deja `suscripciones_anuales = 0`
+ *   y restituye el presupuesto proporcionalmente entre las categorías no fijas.
+ */
+export function applyDynamicAnnualSubscriptionsToMonthBudget(state = {}, targetYearMonth = '') {
+  const ym = typeof targetYearMonth === 'string' && /^\d{4}-\d{2}$/.test(targetYearMonth)
+    ? targetYearMonth
+    : resolveCalendarProgress().activeYearMonth;
+
+  if (!state.monthlyBudgets || typeof state.monthlyBudgets !== 'object') {
+    state.monthlyBudgets = {};
+  }
+  const categories = Array.isArray(state.categories) && state.categories.length > 0
+    ? state.categories
+    : DEFAULT_CATEGORIES;
+
+  if (!state.monthlyBudgets[ym]) {
+    const initCats = {};
+    categories.forEach((c) => {
+      initCats[c.id] = c.defaultBudget !== undefined ? c.defaultBudget : 50000;
+    });
+    state.monthlyBudgets[ym] = {
+      incomeTarget: state.familyConfig?.monthlyIncomeTarget || 2350000,
+      savingsGoal: state.familyConfig?.monthlySavingsGoal || 250000,
+      categories: initCats,
+      lockedCategories: {},
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  const monthCfg = state.monthlyBudgets[ym];
+  if (!monthCfg.categories || typeof monthCfg.categories !== 'object') {
+    monthCfg.categories = {};
+  }
+  if (!monthCfg.lockedCategories || typeof monthCfg.lockedCategories !== 'object') {
+    monthCfg.lockedCategories = {};
+  }
+
+  const annualSummary = getAnnualSubscriptionsForMonth(state, ym);
+  monthCfg.categories.suscripciones_anuales = annualSummary.totalDueInMonth;
+
+  const lockedIds = Object.keys(monthCfg.lockedCategories).filter((cid) => Boolean(monthCfg.lockedCategories[cid]));
+  if (!lockedIds.includes('suscripciones_anuales')) {
+    lockedIds.push('suscripciones_anuales');
+  }
+
+  const dist = distributeBudgetProportionally({
+    incomeTarget: monthCfg.incomeTarget || state.familyConfig?.monthlyIncomeTarget || 2350000,
+    savingsGoal: monthCfg.savingsGoal || state.familyConfig?.monthlySavingsGoal || 250000,
+    categories,
+    currentAmounts: monthCfg.categories,
+    mode: 'current',
+    lockedCategoryIds: lockedIds
+  });
+
+  monthCfg.categories = { ...dist.allocations };
+  monthCfg.updatedAt = new Date().toISOString();
+
+  return {
+    annualSummary,
+    distribution: dist,
+    monthCfg
   };
 }
 

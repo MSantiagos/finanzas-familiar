@@ -316,6 +316,45 @@ function mergeFamilyStates_(existing, incoming) {
     }
   }
 
+  // 6d. Fusionar Suscripciones Anuales Dinámicas (annualSubscriptions + deletedAnnualSubscriptionIds)
+  var deletedAnnual = {};
+  var existingDelAnn = existing.deletedAnnualSubscriptionIds || {};
+  var incomingDelAnn = incoming.deletedAnnualSubscriptionIds || {};
+  Object.keys(existingDelAnn).forEach(function (sId) {
+    deletedAnnual[sId] = existingDelAnn[sId];
+  });
+  Object.keys(incomingDelAnn).forEach(function (sId) {
+    var prevTs = String(deletedAnnual[sId] || '');
+    var nextTs = String(incomingDelAnn[sId] || '');
+    if (!prevTs || nextTs >= prevTs) {
+      deletedAnnual[sId] = incomingDelAnn[sId];
+    }
+  });
+
+  var annMap = {};
+  var allAnn = (existing.annualSubscriptions || []).concat(incoming.annualSubscriptions || []);
+  for (var aIdx = 0; aIdx < allAnn.length; aIdx++) {
+    var ann = allAnn[aIdx];
+    if (!ann || !ann.id) continue;
+    if (deletedAnnual[ann.id]) continue;
+    var prevAnn = annMap[ann.id];
+    if (!prevAnn) {
+      annMap[ann.id] = Object.assign({}, ann);
+    } else {
+      var annUA = String(prevAnn.updatedAt || prevAnn.createdAt || '');
+      var annUB = String(ann.updatedAt || ann.createdAt || '');
+      if (annUB >= annUA) {
+        annMap[ann.id] = Object.assign({}, prevAnn, ann);
+      }
+    }
+  }
+  var mergedAnnualSubscriptions = Object.keys(annMap).map(function (id) { return annMap[id]; });
+  mergedAnnualSubscriptions.sort(function (a, b) {
+    var diffM = Number(a.billingMonth || 1) - Number(b.billingMonth || 1);
+    if (diffM !== 0) return diffM;
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  });
+
   // 7. Fusionar sharedIntegrations conservando claves no vacías (googleSheetsWebhookUrl, googleSheetsUrl, geminiApiKey)
   var sharedIntegrations = {
     googleSheetsWebhookUrl: '',
@@ -350,6 +389,8 @@ function mergeFamilyStates_(existing, incoming) {
   merged.categories = incoming.categories || existing.categories;
   merged.monthlyBudgets = monthlyBudgets;
   merged.fixedTemplates = mergedTemplates;
+  merged.annualSubscriptions = mergedAnnualSubscriptions;
+  merged.deletedAnnualSubscriptionIds = deletedAnnual;
   merged.transactions = mergedTxs;
   merged.deletedTransactionIds = deleted;
   merged.patrimonyItems = mergedPatrimony;

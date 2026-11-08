@@ -1,7 +1,7 @@
 import {
   PAYMENT_METHODS,
   SAMPLE_BANK_STATEMENT_TEXT
-} from './data/defaults.js?v=14';
+} from './data/defaults.js?v=15';
 import {
   loadState,
   saveState,
@@ -17,7 +17,7 @@ import {
   setupAutoOnlineSync,
   exportStateToJsonString,
   importStateFromJsonString
-} from './services/storage.js?v=14';
+} from './services/storage.js?v=15';
 import {
   parseBankStatementText,
   reconcileStatementRows,
@@ -25,19 +25,19 @@ import {
   formatLiveCLPInput,
   normalizeContactKey,
   extractContactDisplayName
-} from './services/reconciler.js?v=14';
+} from './services/reconciler.js?v=15';
 import {
   scanReceiptWithGemini,
   classifyStatementRowsWithGemini,
   getDemoScannedReceipt,
   generateMonthlyFamilyAuditWithGemini
-} from './services/geminiScanner.js?v=14';
-import { exportStateToExcel } from './services/excelExport.js?v=14';
+} from './services/geminiScanner.js?v=15';
+import { exportStateToExcel } from './services/excelExport.js?v=15';
 import {
   parseQuickNaturalExpense,
   buildInstallmentTransactions,
   getQuickPresetsForAuthor
-} from './services/smartInput.js?v=14';
+} from './services/smartInput.js?v=15';
 import {
   calculateMonthlyFinancialSummary,
   calculateBurnRateAndProjection,
@@ -50,8 +50,10 @@ import {
   calculateMultiMonthComparison,
   clonePreviousMonthBudget,
   distributeBudgetProportionally,
+  getAnnualSubscriptionsForMonth,
+  applyDynamicAnnualSubscriptionsToMonthBudget,
   buildCoupleWhatsAppMessages
-} from './domain/financialEngine.js?v=14';
+} from './domain/financialEngine.js?v=15';
 
 // Estado global en memoria de la aplicación
 let appState = loadState();
@@ -149,6 +151,8 @@ let lastDeletedBatch = null;
 // Estado de la Bóveda de Patrimonio Intocable & Cripto (pestaña Presupuestos)
 let isAddingPatrimonyItem = false;
 let editingPatrimonyId = null;
+let isAddingAnnualSub = false;
+let editingAnnualSubId = null;
 
 // Estado del buscador y filtros instantáneos del historial de movimientos
 let txFilterState = {
@@ -259,6 +263,13 @@ function isUserTyping() {
  */
 function getMonthMetrics(ym) {
   ensureMonthBudget(appState, ym);
+  const annualSubSummary = getAnnualSubscriptionsForMonth(appState, ym);
+  const currentAnnualCatBudget = Math.round(
+    Number(appState.monthlyBudgets?.[ym]?.categories?.suscripciones_anuales || 0)
+  );
+  if (annualSubSummary.totalDueInMonth !== currentAnnualCatBudget) {
+    applyDynamicAnnualSubscriptionsToMonthBudget(appState, ym);
+  }
   const todayISO = getTodayISO();
   const summary = calculateMonthlyFinancialSummary(appState, ym, todayISO);
   const burnRate = calculateBurnRateAndProjection(summary, ym, todayISO);
@@ -279,6 +290,7 @@ function getMonthMetrics(ym) {
 
   return {
     ...summary,
+    annualSubSummary,
     burnRate,
     loansLedger,
     instantDiagnosis,
@@ -1858,7 +1870,14 @@ function renderBudgetTab(metrics) {
 
       ${isEditingBudgets ? renderBudgetEditorForm(metrics) : `
         <div class="budget-bars-list">
-          ${categories.map((cat) => {
+          ${categories.filter((cat) => {
+            if (cat.id === 'suscripciones_anuales' || cat.isDynamicAnnual) {
+              const bAmt = Number(metrics.monthCfg.categories?.[cat.id] || 0);
+              const sAmt = Number(metrics.spentByCategory[cat.id] || 0);
+              return bAmt > 0 || sAmt > 0;
+            }
+            return true;
+          }).map((cat) => {
             const budget = Number(metrics.monthCfg.categories?.[cat.id] ?? cat.defaultBudget ?? 0);
             const spent = Number(metrics.spentByCategory[cat.id] || 0);
             const rem = budget - spent;
@@ -1868,15 +1887,41 @@ function renderBudgetTab(metrics) {
             const badgeText = pct >= 100 ? '🚨 Excedido' : pct >= 90 ? '🔴 Al Tope' : pct >= 75 ? '🟡 Cuidado' : '🟢 Saludable';
             const perDayRem = rem > 0 ? Math.round(rem / metrics.daysRemaining) : 0;
             const showPaceNeedle = cat.group !== 'fijo';
+            const isLocked = Boolean(metrics.monthCfg.lockedCategories?.[cat.id]);
+            const isDynamicAnnual = cat.id === 'suscripciones_anuales' || Boolean(cat.isDynamicAnnual);
+            const dueItemsNames = isDynamicAnnual
+              ? (metrics.annualSubSummary?.dueThisMonth || []).map((i) => i.name).join(', ')
+              : '';
 
             return `
-              <div class="budget-item-card">
+              <div class="budget-item-card" ${isDynamicAnnual ? 'style="border:1.5px solid #0ea5e9;background:linear-gradient(180deg, rgba(14,165,233,0.06), transparent);"' : ''}>
                 <div class="budget-item-top">
                   <div class="budget-cat-title">
                     <span class="budget-cat-icon">${cat.icon}</span>
                     <div>
-                      <strong>${cat.name}</strong>
-                      <small class="budget-cat-desc">${cat.description}</small>
+                      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                        <strong>${cat.name}</strong>
+                        ${isDynamicAnnual ? `
+                          <span style="font-size:0.68rem;background:#e0f2fe;color:#0369a1;padding:1px 7px;border-radius:999px;font-weight:700;">
+                            📅 Activo en ${getMonthNameLabel(activeYearMonth)}
+                          </span>
+                        ` : `
+                          <button
+                            type="button"
+                            data-action="toggle-lock-category-quick"
+                            data-cat-id="${cat.id}"
+                            style="font-size:0.68rem;padding:2px 7px;border-radius:999px;cursor:pointer;font-weight:700;border:1px solid ${isLocked ? '#4f46e5' : 'var(--border-strong)'};background:${isLocked ? '#e0e7ff' : 'transparent'};color:${isLocked ? '#3730a3' : 'var(--text-muted)'};"
+                            title="${isLocked ? 'Presupuesto FIJO (no se toca al distribuir ni al descontar suscripciones anuales). Clic para liberar.' : 'Clic para FIJAR este presupuesto'}"
+                          >
+                            ${isLocked ? '📌 Fijo' : '🔓 Fijar'}
+                          </button>
+                        `}
+                      </div>
+                      <small class="budget-cat-desc">
+                        ${isDynamicAnnual && dueItemsNames
+                          ? `Renovaciones de este mes: <strong>${dueItemsNames}</strong> (descontado proporcionalmente de presupuestos no fijos)`
+                          : cat.description}
+                      </small>
                     </div>
                   </div>
                   <div class="budget-cat-numbers">
@@ -1915,7 +1960,179 @@ function renderBudgetTab(metrics) {
       `}
     </section>
 
+    ${renderAnnualSubscriptionsSection(metrics)}
+
     ${renderPatrimonyVaultSection(metrics)}
+  `;
+}
+
+function renderAnnualSubscriptionsSection(metrics) {
+  const annualSummary = metrics.annualSubSummary || getAnnualSubscriptionsForMonth(appState, activeYearMonth);
+  const allItems = annualSummary.allItems || [];
+  const dueThisMonth = annualSummary.dueThisMonth || [];
+  const editingSub = editingAnnualSubId ? allItems.find((i) => i.id === editingAnnualSubId) : null;
+  const showForm = isAddingAnnualSub || Boolean(editingSub);
+
+  const monthNames = [
+    'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+  ];
+
+  const lockedCount = Object.values(metrics.monthCfg?.lockedCategories || {}).filter(Boolean).length;
+
+  return `
+    <section class="card-panel mt-section" style="border:1.5px solid #0ea5e9;">
+      <div class="section-header-row">
+        <div>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;">
+            <h2 class="section-title" style="margin:0;">📅 Suscripciones Anuales Dinámicas</h2>
+            ${dueThisMonth.length > 0 ? `
+              <span class="sem-badge bar-yellow" style="font-size:0.74rem;">
+                🔔 Este mes vencen ${dueThisMonth.length} (${formatCLP(annualSummary.totalDueInMonth)}) — Activo en Semáforo
+              </span>
+            ` : `
+              <span class="sem-badge bar-green" style="font-size:0.74rem;">
+                ✅ $0 en ${getMonthNameLabel(activeYearMonth)} (Oculto este mes en Semáforo)
+              </span>
+            `}
+          </div>
+          <p class="section-subtitle" style="margin-top:4px;">
+            Programa aquí tus cobros que son <strong>1 vez al año</strong> (ej. Microsoft 365, Antivirus, Disney+ Anual, Amazon Prime, Dominio, PlayStation).
+            <strong>El presupuesto aparece automáticamente solo en el mes que corresponde</strong> y descuenta su valor en forma proporcional de los presupuestos que no estén fijos (<strong>🔓</strong>${lockedCount > 0 ? ` · tienes ${lockedCount} presupuesto(s) fijado(s) 📌 protegidos` : ''}).
+          </p>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+          <button type="button" class="btn-secondary" data-action="toggle-add-annual-sub" style="border-color:#0ea5e9;color:#0284c7;font-weight:600;">
+            ${showForm ? '✖️ Cerrar Formulario' : '➕ Agregar Suscripción Anual'}
+          </button>
+        </div>
+      </div>
+
+      ${showForm ? `
+        <form id="annual-sub-form" class="budget-editor-box" style="margin-top:12px;margin-bottom:14px;">
+          <h4 style="margin:0 0 10px;font-size:0.88rem;">
+            ${editingSub ? `✏️ Editar Suscripción Anual: ${editingSub.name}` : '➕ Programar Suscripción o Membresía Anual'}
+          </h4>
+          <div class="form-row-two">
+            <div class="input-group">
+              <label>Nombre de la Suscripción / Membresía Anual</label>
+              <input
+                type="text"
+                id="ann-sub-name-input"
+                class="text-input"
+                placeholder="Ej: Microsoft 365 Familiar, Disney+ Anual, Antivirus..."
+                value="${editingSub ? editingSub.name : ''}"
+                required
+              />
+            </div>
+            <div class="input-group">
+              <label>Monto Total del Cobro Anual (CLP)</label>
+              <input
+                type="text"
+                inputmode="numeric"
+                id="ann-sub-amount-input"
+                class="text-input live-clp-input"
+                placeholder="Ej: 79.990"
+                value="${editingSub ? formatLiveCLPInput(editingSub.amount) : ''}"
+                required
+              />
+            </div>
+          </div>
+
+          <div class="form-row-two" style="margin-top:8px;">
+            <div class="input-group">
+              <label>📅 Mes del Año en que se Cobra</label>
+              <select id="ann-sub-month-select" class="text-input">
+                ${monthNames.map((mLabel, idx) => {
+                  const mNum = idx + 1;
+                  const selectedMonth = editingSub ? editingSub.billingMonth : annualSummary.monthNumber;
+                  return `<option value="${mNum}" ${selectedMonth === mNum ? 'selected' : ''}>${mNum}. ${mLabel}</option>`;
+                }).join('')}
+              </select>
+            </div>
+            <div class="input-group">
+              <label>💳 Medio de Pago Habitual</label>
+              <select id="ann-sub-pm-select" class="text-input">
+                ${PAYMENT_METHODS.map((pm) => `
+                  <option value="${pm.id}" ${(editingSub ? editingSub.paymentMethod : 'cmr_falabella') === pm.id ? 'selected' : ''}>
+                    ${pm.icon} ${pm.name}
+                  </option>
+                `).join('')}
+              </select>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:8px;margin-top:12px;">
+            <button type="submit" class="btn-primary-giant" style="flex:1;">
+              ${editingSub ? '💾 Actualizar Suscripción Anual' : '💾 Guardar y Ajustar Presupuesto de su Mes'}
+            </button>
+            <button type="button" class="btn-secondary" data-action="cancel-annual-sub-edit">
+              Cancelar
+            </button>
+          </div>
+        </form>
+      ` : ''}
+
+      ${allItems.length > 0 ? `
+        <div class="tx-list" style="margin-top:12px;">
+          ${allItems.map((item) => {
+            const isDueNow = item.billingMonth === annualSummary.monthNumber;
+            const mName = monthNames[(item.billingMonth || 1) - 1] || `Mes ${item.billingMonth}`;
+            const pmObj = PAYMENT_METHODS.find((p) => p.id === item.paymentMethod) || PAYMENT_METHODS[0];
+            const paidTx = isDueNow
+              ? (metrics.txs || []).find((t) => t.annualSubscriptionId === item.id)
+              : null;
+
+            return `
+              <div class="tx-row" style="${isDueNow ? 'border:1.5px solid #0ea5e9;background:rgba(14,165,233,0.05);' : ''}">
+                <div class="tx-left" data-action="edit-annual-sub" data-id="${item.id}" title="Toca para editar esta suscripción anual">
+                  <div class="tx-icon-circle">${isDueNow ? '🔔' : '📅'}</div>
+                  <div class="tx-info">
+                    <div class="tx-title-line">
+                      <strong>${item.name}</strong>
+                      <span class="sem-badge ${isDueNow ? 'bar-yellow' : 'bar-green'}" style="font-size:0.7rem;">
+                        ${isDueNow ? `🔔 Se cobra este mes (${mName})` : `📅 Cobro en ${mName}`}
+                      </span>
+                      ${paidTx ? `<span class="badge-reconciled">✅ Pagada este año</span>` : ''}
+                    </div>
+                    <div class="tx-meta-line">
+                      <span>${pmObj.icon} ${pmObj.shortName}</span>
+                      <span>•</span>
+                      <span>Equivale a ~${formatCLP(Math.round(item.amount / 12))}/mes</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="tx-right" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                  <div class="tx-amount">${formatCLP(item.amount)}/año</div>
+                  ${isDueNow && !paidTx ? `
+                    <button
+                      type="button"
+                      class="btn-secondary"
+                      data-action="confirm-annual-sub-tx"
+                      data-id="${item.id}"
+                      style="padding:5px 10px;font-size:0.74rem;border-color:#10b981;color:#047857;font-weight:700;"
+                      title="Registrar el pago de esta suscripción anual en ${getMonthNameLabel(activeYearMonth)}"
+                    >
+                      ✅ Confirmar Pago
+                    </button>
+                  ` : ''}
+                  <button type="button" class="btn-edit-tx" data-action="edit-annual-sub" data-id="${item.id}" title="Editar suscripción anual">
+                    ✏️
+                  </button>
+                  <button type="button" class="btn-delete-tx" data-action="delete-annual-sub" data-id="${item.id}" title="Eliminar suscripción anual">
+                    🗑️
+                  </button>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      ` : `
+        <p style="font-size:0.82rem;color:var(--text-muted);margin:10px 0 0;">
+          Aún no tienes suscripciones anuales programadas. Toca <strong>"➕ Agregar Suscripción Anual"</strong> para registrar cobros anuales: en los meses sin cobros este presupuesto se mantiene en <strong>$0 (oculto)</strong> y cuando llega el mes de renovación aparece solo y descuenta proporcionalmente de tus presupuestos no fijos (🔓).
+        </p>
+      `}
+    </section>
   `;
 }
 
@@ -2186,29 +2403,55 @@ function renderBudgetEditorForm(metrics) {
         </div>
       </div>
 
-      <h4 style="margin:12px 0 8px;font-size:0.88rem;">Presupuesto Máximo por Categoría para ${getMonthNameLabel(activeYearMonth)}</h4>
+      <h4 style="margin:12px 0 8px;font-size:0.88rem;">Presupuesto Máximo por Categoría para ${getMonthNameLabel(activeYearMonth)} <small style="font-weight:400;color:var(--text-secondary);">(usa el botón <strong>🔓 Fijar / 📌 Fijo</strong> al extremo derecho de cada cifra para protegerla)</small></h4>
       <div class="editor-cats-grid">
-        ${categories.map((cat) => {
+        ${categories.filter((cat) => {
+          if (cat.id === 'suscripciones_anuales' || cat.isDynamicAnnual) {
+            return Number(metrics.monthCfg.categories?.[cat.id] || 0) > 0;
+          }
+          return true;
+        }).map((cat) => {
           const catAmt = Math.round(Number(metrics.monthCfg.categories?.[cat.id] ?? cat.defaultBudget ?? 0));
           const catPct = spendableTarget > 0 ? Math.round((catAmt / spendableTarget) * 1000) / 10 : 0;
+          const isLocked = Boolean(metrics.monthCfg.lockedCategories?.[cat.id]);
+          const isDynamicAnnual = cat.id === 'suscripciones_anuales' || Boolean(cat.isDynamicAnnual);
           return `
             <div class="input-group">
               <label style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
                 <span>${cat.icon} ${cat.name}</span>
                 <span style="display:flex;align-items:center;gap:4px;">
-                  <span data-cat-lock-badge="${cat.id}" style="display:none;font-size:0.68rem;background:#e0e7ff;color:#4338ca;padding:1px 6px;border-radius:999px;cursor:pointer;" title="Fijado manualmente (toca para desbloquear)">📌 Fijo</span>
                   <span class="sem-badge bar-green" data-cat-pct-badge="${cat.id}" style="font-size:0.7rem;padding:1px 6px;">${catPct}%</span>
                 </span>
               </label>
-              <input
-                type="text"
-                inputmode="numeric"
-                name="cat_${cat.id}"
-                data-cat-id="${cat.id}"
-                class="text-input live-clp-input budget-cat-input"
-                value="${formatLiveCLPInput(catAmt)}"
-                required
-              />
+              <div style="display:flex;align-items:center;gap:6px;">
+                <input
+                  type="text"
+                  inputmode="numeric"
+                  name="cat_${cat.id}"
+                  data-cat-id="${cat.id}"
+                  class="text-input live-clp-input budget-cat-input"
+                  style="flex:1;"
+                  value="${formatLiveCLPInput(catAmt)}"
+                  ${isDynamicAnnual ? 'readonly title="Calculado automáticamente según las suscripciones anuales de este mes"' : 'required'}
+                />
+                ${isDynamicAnnual ? `
+                  <span
+                    style="white-space:nowrap;padding:8px 10px;border-radius:10px;font-size:0.74rem;font-weight:700;background:#e0f2fe;color:#0369a1;border:1.5px solid #7dd3fc;"
+                    title="Calculado automáticamente por las suscripciones anuales que vencen este mes"
+                  >
+                    📅 Auto
+                  </span>
+                ` : `
+                  <button
+                    type="button"
+                    data-cat-lock-btn="${cat.id}"
+                    style="white-space:nowrap;padding:8px 11px;border-radius:10px;font-size:0.76rem;font-weight:700;cursor:pointer;transition:all 0.15s ease;border:1.5px solid ${isLocked ? '#4f46e5' : 'var(--border-strong)'};background:${isLocked ? '#e0e7ff' : 'var(--bg-card)'};color:${isLocked ? '#3730a3' : 'var(--text-secondary)'};"
+                    title="${isLocked ? 'Presupuesto FIJO: no se modificará al repartir ni al descontar suscripciones anuales. Toca para destrabar.' : 'Toca para dejar FIJO este presupuesto y que no se mueva automáticamente'}"
+                  >
+                    ${isLocked ? '📌 Fijo' : '🔓 Fijar'}
+                  </button>
+                `}
+              </div>
             </div>
           `;
         }).join('')}
@@ -3073,12 +3316,15 @@ function attachDynamicInputListeners() {
     };
   }
 
-  // Editor de Presupuestos con Suma Dinámica en Vivo y Auto-Ajuste Proporcional
+  // Editor de Presupuestos con Suma Dinámica en Vivo, Botón Explícito para Fijar (📌 Fijo / 🔓 Fijar) y Auto-Ajuste Proporcional
   const budgetEditorForm = document.getElementById('budget-editor-form');
   if (budgetEditorForm) {
     const categories = appState.categories || [];
     const baselineAmounts = {};
-    const lockedCategoryIds = new Set();
+    const persistedLocks = appState.monthlyBudgets?.[activeYearMonth]?.lockedCategories || {};
+    const lockedCategoryIds = new Set(
+      Object.keys(persistedLocks).filter((cid) => Boolean(persistedLocks[cid]))
+    );
 
     const readFormAmounts = () => {
       const incInput = document.getElementById('budget-income-input');
@@ -3088,7 +3334,13 @@ function attachDynamicInputListeners() {
       const currentAmounts = {};
       categories.forEach((cat) => {
         const el = budgetEditorForm.querySelector(`input[name="cat_${cat.id}"]`);
-        currentAmounts[cat.id] = cleanChileanAmount(el ? el.value : 0);
+        if (el) {
+          currentAmounts[cat.id] = cleanChileanAmount(el.value);
+        } else {
+          currentAmounts[cat.id] = Math.round(
+            Number(appState.monthlyBudgets?.[activeYearMonth]?.categories?.[cat.id] || 0)
+          );
+        }
       });
       return { incomeTarget, savingsGoal, currentAmounts };
     };
@@ -3096,6 +3348,18 @@ function attachDynamicInputListeners() {
     // Inicializar baseline con los valores iniciales del formulario
     const initRead = readFormAmounts();
     Object.assign(baselineAmounts, initRead.currentAmounts);
+
+    const persistLocksToState = () => {
+      const mCfg = appState.monthlyBudgets?.[activeYearMonth];
+      if (!mCfg) return;
+      const nextLocks = {};
+      lockedCategoryIds.forEach((cid) => {
+        if (cid !== 'suscripciones_anuales') {
+          nextLocks[cid] = true;
+        }
+      });
+      mCfg.lockedCategories = nextLocks;
+    };
 
     const refreshLiveBudgetSummaryDOM = () => {
       const { incomeTarget, savingsGoal, currentAmounts } = readFormAmounts();
@@ -3137,22 +3401,41 @@ function attachDynamicInputListeners() {
         if (pctBadge) {
           pctBadge.textContent = `${catPct}%`;
         }
-        const lockBadge = budgetEditorForm.querySelector(`[data-cat-lock-badge="${cat.id}"]`);
-        if (lockBadge) {
-          lockBadge.style.display = lockedCategoryIds.has(cat.id) ? 'inline-block' : 'none';
+        const lockBtn = budgetEditorForm.querySelector(`[data-cat-lock-btn="${cat.id}"]`);
+        if (lockBtn) {
+          const isLocked = lockedCategoryIds.has(cat.id);
+          lockBtn.textContent = isLocked ? '📌 Fijo' : '🔓 Fijar';
+          lockBtn.style.borderColor = isLocked ? '#4f46e5' : 'var(--border-strong)';
+          lockBtn.style.background = isLocked ? '#e0e7ff' : 'var(--bg-card)';
+          lockBtn.style.color = isLocked ? '#3730a3' : 'var(--text-secondary)';
+          lockBtn.title = isLocked
+            ? 'Presupuesto FIJO: no se modificará al repartir ni al descontar suscripciones anuales. Toca para destrabar.'
+            : 'Toca para dejar FIJO este presupuesto y que no se mueva automáticamente';
         }
       });
     };
 
-    budgetEditorForm.querySelectorAll('[data-cat-lock-badge]').forEach((badge) => {
-      badge.onclick = (ev) => {
+    budgetEditorForm.querySelectorAll('[data-cat-lock-btn]').forEach((btn) => {
+      btn.onclick = (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        const cid = badge.getAttribute('data-cat-lock-badge');
-        if (cid && lockedCategoryIds.has(cid)) {
+        const cid = btn.getAttribute('data-cat-lock-btn');
+        if (!cid) return;
+        const catObj = categories.find((c) => c.id === cid);
+        const catLabel = catObj ? `${catObj.icon} ${catObj.name}` : cid;
+        if (lockedCategoryIds.has(cid)) {
           lockedCategoryIds.delete(cid);
-          refreshLiveBudgetSummaryDOM();
+          showToast(`🔓 ${catLabel} liberado (se ajustará proporcionalmente)`, 'success');
+        } else {
+          const inp = budgetEditorForm.querySelector(`input[name="cat_${cid}"]`);
+          if (inp) {
+            baselineAmounts[cid] = cleanChileanAmount(inp.value);
+          }
+          lockedCategoryIds.add(cid);
+          showToast(`📌 ${catLabel} fijado (no se tocará al repartir ni en cobros anuales)`, 'success');
         }
+        persistLocksToState();
+        refreshLiveBudgetSummaryDOM();
       };
     });
 
@@ -3167,12 +3450,8 @@ function attachDynamicInputListeners() {
         const typedVal = cleanChileanAmount(target.value);
         baselineAmounts[editedCatId] = typedVal;
         if (autoAdjust) {
-          lockedCategoryIds.add(editedCatId);
-          // Si el usuario ya fijó todas las categorías, liberar todas menos la actual para poder cuadrar el resto
-          if (lockedCategoryIds.size >= categories.length) {
-            lockedCategoryIds.clear();
-            lockedCategoryIds.add(editedCatId);
-          }
+          // Mantiene fijos los que tengan 📌 Fijo + el input que se está escribiendo ahora mismo (sin fijarlo permanentemente)
+          const effectiveLocks = Array.from(new Set([...Array.from(lockedCategoryIds), editedCatId]));
           const { incomeTarget, savingsGoal } = readFormAmounts();
           const dist = distributeBudgetProportionally({
             incomeTarget,
@@ -3180,10 +3459,10 @@ function attachDynamicInputListeners() {
             categories,
             currentAmounts: baselineAmounts,
             mode: 'current',
-            lockedCategoryIds: Array.from(lockedCategoryIds)
+            lockedCategoryIds: effectiveLocks
           });
           categories.forEach((cat) => {
-            if (cat.id !== editedCatId && !lockedCategoryIds.has(cat.id)) {
+            if (cat.id !== editedCatId && !lockedCategoryIds.has(cat.id) && cat.id !== 'suscripciones_anuales' && !cat.isDynamicAnnual) {
               const inp = budgetEditorForm.querySelector(`input[name="cat_${cat.id}"]`);
               if (inp) {
                 inp.value = formatLiveCLPInput(dist.allocations[cat.id]);
@@ -3203,7 +3482,7 @@ function attachDynamicInputListeners() {
             lockedCategoryIds: Array.from(lockedCategoryIds)
           });
           categories.forEach((cat) => {
-            if (!lockedCategoryIds.has(cat.id)) {
+            if (!lockedCategoryIds.has(cat.id) && cat.id !== 'suscripciones_anuales' && !cat.isDynamicAnnual) {
               const inp = budgetEditorForm.querySelector(`input[name="cat_${cat.id}"]`);
               if (inp) {
                 inp.value = formatLiveCLPInput(dist.allocations[cat.id]);
@@ -3218,7 +3497,6 @@ function attachDynamicInputListeners() {
     });
 
     budgetEditorForm._distributeProportionally = (mode = 'current') => {
-      lockedCategoryIds.clear();
       const { incomeTarget, savingsGoal, currentAmounts } = readFormAmounts();
       const dist = distributeBudgetProportionally({
         incomeTarget,
@@ -3226,7 +3504,7 @@ function attachDynamicInputListeners() {
         categories,
         currentAmounts,
         mode,
-        lockedCategoryIds: []
+        lockedCategoryIds: Array.from(lockedCategoryIds)
       });
       categories.forEach((cat) => {
         const inp = budgetEditorForm.querySelector(`input[name="cat_${cat.id}"]`);
@@ -3255,13 +3533,99 @@ function attachDynamicInputListeners() {
       appState.familyConfig.monthlySavingsGoal = newSavingsGoal;
       appState.familyConfig.updatedAt = nowISO;
 
+      const nextLocks = {};
+      lockedCategoryIds.forEach((cid) => {
+        if (cid !== 'suscripciones_anuales') {
+          nextLocks[cid] = true;
+        }
+      });
+      monthCfg.lockedCategories = nextLocks;
+
       (appState.categories || []).forEach((cat) => {
-        monthCfg.categories[cat.id] = cleanChileanAmount(fd.get(`cat_${cat.id}`));
+        if (cat.id === 'suscripciones_anuales' || cat.isDynamicAnnual) {
+          const annSummary = getAnnualSubscriptionsForMonth(appState, activeYearMonth);
+          monthCfg.categories[cat.id] = annSummary.totalDueInMonth;
+        } else {
+          const rawVal = fd.get(`cat_${cat.id}`);
+          if (rawVal !== null && rawVal !== undefined) {
+            monthCfg.categories[cat.id] = cleanChileanAmount(rawVal);
+          }
+        }
       });
 
       isEditingBudgets = false;
       saveState(appState);
-      showToast('✅ Presupuestos y meta de ahorro actualizados y sincronizados', 'success');
+      showToast('✅ Presupuestos y categorías fijas (📌) guardados y sincronizados', 'success');
+      renderApp();
+    };
+  }
+
+  // Formulario de Suscripciones Anuales Dinámicas
+  const annualSubForm = document.getElementById('annual-sub-form');
+  if (annualSubForm) {
+    annualSubForm.onsubmit = (e) => {
+      e.preventDefault();
+      const name = document.getElementById('ann-sub-name-input')?.value?.trim() || '';
+      const amount = cleanChileanAmount(document.getElementById('ann-sub-amount-input')?.value);
+      const billingMonth = Math.min(12, Math.max(1, Number(document.getElementById('ann-sub-month-select')?.value || 1)));
+      const paymentMethod = document.getElementById('ann-sub-pm-select')?.value || 'cmr_falabella';
+
+      if (!name || amount <= 0) {
+        showToast('Ingresa el nombre de la suscripción anual y un monto mayor a $0', 'error');
+        return;
+      }
+
+      const nowISO = new Date().toISOString();
+      if (!Array.isArray(appState.annualSubscriptions)) appState.annualSubscriptions = [];
+
+      let previousMonthNum = null;
+      if (editingAnnualSubId) {
+        const existing = appState.annualSubscriptions.find((s) => s.id === editingAnnualSubId);
+        if (existing) {
+          previousMonthNum = Number(existing.billingMonth || 0);
+          existing.name = name;
+          existing.amount = amount;
+          existing.billingMonth = billingMonth;
+          existing.paymentMethod = paymentMethod;
+          existing.updatedAt = nowISO;
+        }
+      } else {
+        appState.annualSubscriptions.push({
+          id: `annsub_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          name,
+          amount,
+          billingMonth,
+          paymentMethod,
+          active: true,
+          createdAt: nowISO,
+          updatedAt: nowISO
+        });
+      }
+
+      const activeYear = String(activeYearMonth).split('-')[0] || '2026';
+      const targetYm = `${activeYear}-${String(billingMonth).padStart(2, '0')}`;
+      applyDynamicAnnualSubscriptionsToMonthBudget(appState, targetYm);
+      if (previousMonthNum && previousMonthNum !== billingMonth) {
+        const prevYm = `${activeYear}-${String(previousMonthNum).padStart(2, '0')}`;
+        applyDynamicAnnualSubscriptionsToMonthBudget(appState, prevYm);
+      }
+      if (targetYm !== activeYearMonth) {
+        applyDynamicAnnualSubscriptionsToMonthBudget(appState, activeYearMonth);
+      }
+
+      editingAnnualSubId = null;
+      isAddingAnnualSub = false;
+      saveState(appState);
+
+      const monthNames = [
+        'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+        'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+      ];
+      const mLabel = monthNames[billingMonth - 1] || `Mes ${billingMonth}`;
+      showToast(
+        `📅 "${name}" (${formatCLP(amount)}/año) programada para ${mLabel}: descontará automáticamente de presupuestos no fijos (🔓)`,
+        'success'
+      );
       renderApp();
     };
   }
@@ -3884,21 +4248,123 @@ document.addEventListener('click', async (e) => {
     const monthCfg = appState.monthlyBudgets?.[activeYearMonth];
     if (!monthCfg) return;
     const categories = appState.categories || [];
+    const lockedIds = Object.keys(monthCfg.lockedCategories || {}).filter(
+      (cid) => Boolean(monthCfg.lockedCategories[cid])
+    );
     const dist = distributeBudgetProportionally({
       incomeTarget: monthCfg.incomeTarget || 2350000,
       savingsGoal: monthCfg.savingsGoal || 250000,
       categories,
       currentAmounts: monthCfg.categories || {},
-      mode: 'current'
+      mode: 'current',
+      lockedCategoryIds: lockedIds
     });
     const nowISO = new Date().toISOString();
     monthCfg.categories = { ...dist.allocations };
     monthCfg.updatedAt = nowISO;
     saveState(appState);
     showToast(
-      `⚖️ ${formatCLP(dist.spendableTarget)} distribuidos proporcionalmente en tus ${categories.length} categorías (100% cuadrado)`,
+      lockedIds.length > 0
+        ? `⚖️ Disponible distribuido proporcionalmente respetando tus ${lockedIds.length} presupuesto(s) fijo(s) 📌`
+        : `⚖️ ${formatCLP(dist.spendableTarget)} distribuidos proporcionalmente (100% cuadrado)`,
       'success'
     );
+    renderApp();
+    return;
+  }
+
+  if (action === 'toggle-lock-category-quick') {
+    const cid = btn.dataset.catId;
+    const monthCfg = appState.monthlyBudgets?.[activeYearMonth];
+    if (!cid || !monthCfg) return;
+    if (!monthCfg.lockedCategories || typeof monthCfg.lockedCategories !== 'object') {
+      monthCfg.lockedCategories = {};
+    }
+    const catObj = (appState.categories || []).find((c) => c.id === cid);
+    const catLabel = catObj ? `${catObj.icon} ${catObj.name}` : cid;
+    if (monthCfg.lockedCategories[cid]) {
+      delete monthCfg.lockedCategories[cid];
+      showToast(`🔓 ${catLabel} liberado (participará en ajustes proporcionales)`, 'success');
+    } else {
+      monthCfg.lockedCategories[cid] = true;
+      showToast(`📌 ${catLabel} fijado (protegido frente a repartos y cobros anuales)`, 'success');
+    }
+    monthCfg.updatedAt = new Date().toISOString();
+    saveState(appState);
+    renderApp();
+    return;
+  }
+
+  if (action === 'toggle-add-annual-sub') {
+    if (isAddingAnnualSub || editingAnnualSubId) {
+      isAddingAnnualSub = false;
+      editingAnnualSubId = null;
+    } else {
+      isAddingAnnualSub = true;
+      editingAnnualSubId = null;
+    }
+    renderApp();
+    return;
+  }
+
+  if (action === 'cancel-annual-sub-edit') {
+    isAddingAnnualSub = false;
+    editingAnnualSubId = null;
+    renderApp();
+    return;
+  }
+
+  if (action === 'edit-annual-sub') {
+    editingAnnualSubId = btn.dataset.id || null;
+    isAddingAnnualSub = false;
+    renderApp();
+    return;
+  }
+
+  if (action === 'delete-annual-sub') {
+    const id = btn.dataset.id;
+    if (!id) return;
+    const nowISO = new Date().toISOString();
+    const targetSub = (appState.annualSubscriptions || []).find((s) => s.id === id);
+    if (!appState.deletedAnnualSubscriptionIds) appState.deletedAnnualSubscriptionIds = {};
+    appState.deletedAnnualSubscriptionIds[id] = nowISO;
+    appState.annualSubscriptions = (appState.annualSubscriptions || []).filter((s) => s.id !== id);
+    if (editingAnnualSubId === id) editingAnnualSubId = null;
+
+    if (targetSub && targetSub.billingMonth) {
+      const activeYear = String(activeYearMonth).split('-')[0] || '2026';
+      const subYm = `${activeYear}-${String(targetSub.billingMonth).padStart(2, '0')}`;
+      applyDynamicAnnualSubscriptionsToMonthBudget(appState, subYm);
+    }
+    applyDynamicAnnualSubscriptionsToMonthBudget(appState, activeYearMonth);
+
+    saveState(appState);
+    showToast('🗑️ Suscripción anual eliminada y presupuestos del mes reajustados', 'success');
+    renderApp();
+    return;
+  }
+
+  if (action === 'confirm-annual-sub-tx') {
+    const id = btn.dataset.id;
+    const sub = (appState.annualSubscriptions || []).find((s) => s.id === id);
+    if (!sub) return;
+    const nowISO = new Date().toISOString();
+    appState.transactions.push({
+      id: `tx_annsub_${Date.now()}`,
+      date: `${activeYearMonth}-${String(sub.billingDay || 15).padStart(2, '0')}`,
+      type: 'expense',
+      amount: Math.round(Number(sub.amount || 0)),
+      categoryId: 'suscripciones_anuales',
+      paymentMethod: sub.paymentMethod || 'cmr_falabella',
+      author: userPrefs.activeAuthor || 'el',
+      note: `${sub.name} (Renovación Suscripción Anual)`,
+      annualSubscriptionId: sub.id,
+      reconciled: true,
+      createdAt: nowISO,
+      updatedAt: nowISO
+    });
+    saveState(appState);
+    showToast(`✅ Renovación anual de "${sub.name}" (${formatCLP(sub.amount)}) registrada`, 'success');
     renderApp();
     return;
   }

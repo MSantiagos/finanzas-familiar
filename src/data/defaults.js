@@ -82,6 +82,16 @@ export const DEFAULT_CATEGORIES = [
     description: 'Netflix, Spotify, iCloud, YouTube, Disney+, ChatGPT, almacenamiento nube'
   },
   {
+    id: 'suscripciones_anuales',
+    name: 'Suscripciones Anuales (Renovación del Mes)',
+    icon: '📅',
+    color: '#4f46e5',
+    group: 'fijo',
+    defaultBudget: 0,
+    isDynamicAnnual: true,
+    description: 'Aparece automáticamente en el mes que corresponde y descuenta proporcionalmente de los presupuestos no fijos'
+  },
+  {
     id: 'gustos_personales',
     name: 'Gustos y Compras Personales',
     icon: '🎁',
