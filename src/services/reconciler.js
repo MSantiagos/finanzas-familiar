@@ -958,19 +958,22 @@ function inferSmartContextForIncomingAbono(row, allTransactions, learnedContacts
     };
   }
 
-  // 6.5. Sueldo pagado en los últimos días del mes anterior (ej. 29/10 para financiar Noviembre)
+  // 6.5. Sueldo o Retiro Base Vías SpA pagado en los últimos días del mes anterior (ej. 29/10 y 30/10 para financiar Noviembre)
   if (row.isLatePrevMonthSalary) {
+    const isViasBase = /vias\s+spa/i.test(lower);
     return {
       abonoAction: 'base_income',
       abonoCategory: 'base_income',
       reimburseCategoryId: 'supermercado',
       extraBudgetPct: 0,
       extraTarget: 'proportional_unlocked',
-      smartHint: `💼 Sueldo de fin de mes anterior (${row.date}) detectado automáticamente → Se imputa como tu Ingreso Base de ${row.targetBudgetMonth || 'este mes'} (parte de tus $2.800.000).`
+      smartHint: isViasBase
+        ? `🏢 Retiro mensual Vías SpA de fin de mes anterior (${row.date}) detectado → Se imputa dentro de tu Ingreso Base de ${row.targetBudgetMonth || 'este mes'} ($2.800.000).`
+        : `💼 Sueldo de fin de mes anterior (${row.date}) detectado automáticamente → Se imputa como tu Ingreso Base de ${row.targetBudgetMonth || 'este mes'} (parte de tus $2.800.000).`
     };
   }
 
-  // 6.6. Retiro mensual habitual de Vías SpA (forma parte del Ingreso Base de $2.800.000)
+  // 6.6. Abono de Vías SpA dentro del mes en curso (puede ser Retiro Base o Compra con Factura Vías SpA)
   if (/vias\s+spa/i.test(lower)) {
     return {
       abonoAction: 'base_income',
@@ -978,7 +981,21 @@ function inferSmartContextForIncomingAbono(row, allTransactions, learnedContacts
       reimburseCategoryId: 'supermercado',
       extraBudgetPct: 20,
       extraTarget: 'proportional_unlocked',
-      smartHint: '🏢 Retiro de Utilidades Vías SpA → Se registra dentro de tu Ingreso Base ($2.800.000) sin alterar tu presupuesto. Cámbialo a "💰 Ingreso Extra Adicional" si es un retiro extra.'
+      viasPaidSiblings: { gabriel: true, natalia: true, daniel: true },
+      viasNetMode: 'income',
+      smartHint: '🏢 Abono Vías SpA → Cámbialo a "🧾 Factura Vías SpA (Liquidación Accionistas)" si es compra con factura para descontar el % de tus hermanos.'
+    };
+  }
+
+  // 6.7. Transferencia recibida de hermano accionista (Natalia, Gabriel o Daniel Santiagos) por cruce de facturas/utilidades
+  if (/natalia.*santiagos|gabriel.*santiagos|daniel.*santiagos/i.test(lower)) {
+    return {
+      abonoAction: 'income',
+      abonoCategory: 'income',
+      reimburseCategoryId: 'supermercado',
+      extraBudgetPct: 20,
+      extraTarget: 'proportional_unlocked',
+      smartHint: '🏢 Liquidación / Diferencia a tu favor de hermano accionista (Vías SpA) → Puedes elegir qué % va a Presupuestos No Fijos (🔓) y qué % a Ahorro Blindado (🛡️).'
     };
   }
 
@@ -1367,7 +1384,7 @@ export function reconcileStatementRows(
     }
   });
 
-  return statementRows.map((rawRow) => {
+  const analyzedRows = statementRows.map((rawRow) => {
     const flow = rawRow.flow || (isIncomingStatementDescription(rawRow.description) ? 'in' : 'out');
     const amount = cleanChileanAmount(rawRow.amount);
     const date = isValidStatementDate(rawRow.date) ? normalizeDateToISO(rawRow.date) : rawRow.date;
@@ -1499,6 +1516,8 @@ export function reconcileStatementRows(
         suggestedCategoryId: smartIn.reimburseCategoryId,
         extraBudgetPct: typeof smartIn.extraBudgetPct === 'number' ? smartIn.extraBudgetPct : 20,
         extraTarget: smartIn.extraTarget || 'proportional_unlocked',
+        viasPaidSiblings: smartIn.viasPaidSiblings || { gabriel: true, natalia: true, daniel: true },
+        viasNetMode: smartIn.viasNetMode || 'income',
         smartHint: smartIn.smartHint,
         matchedTx: null,
         selectedToImport: shouldSelectIn
@@ -1712,4 +1731,205 @@ export function reconcileStatementRows(
       selectedToImport: !(onlyActiveMonth && isPreviousMonth)
     };
   });
+
+  // Auto-detectar Facturas Vías SpA en el mes activo cuando existe devolución a hermanos accionistas
+  // (Gabriel 19,5%, Natalia 19,5%, Daniel 22% del Neto) o cuando ya hubo un retiro base mensual de Vías SpA
+  const hasLatePrevMonthViasBase = analyzedRows.some(
+    (r) => r.flow === 'in' && r.isLatePrevMonthSalary && /vias\s+spa/i.test(stripAccents(String(r.description || '').toLowerCase()))
+  );
+
+  analyzedRows.forEach((row) => {
+    if (row.flow !== 'in' || row.status !== 'incoming_abono' || row.isLatePrevMonthSalary) return;
+    const lowerDesc = stripAccents(String(row.description || '').toLowerCase());
+    if (!/vias\s+spa/i.test(lowerDesc)) return;
+
+    const fullCalc = calculateViasInvoiceSettlement(row.amount, {
+      gabriel: true,
+      natalia: true,
+      daniel: true
+    });
+
+    const matchGabrielOut = analyzedRows.find(
+      (r) =>
+        r.flow === 'out' &&
+        /gabriel\s+santiagos|traspaso\s+a\s*:?\s*gabriel\b/i.test(stripAccents(String(r.description || '').toLowerCase())) &&
+        Math.abs(r.amount - fullCalc.gabrielShare) <= 3500 &&
+        daysBetweenISO(r.date, row.date) <= 10
+    );
+    const matchNataliaOut = analyzedRows.find(
+      (r) =>
+        r.flow === 'out' &&
+        /natalia.*santiagos|traspaso\s+a\s*:?\s*natalia\b/i.test(stripAccents(String(r.description || '').toLowerCase())) &&
+        Math.abs(r.amount - fullCalc.nataliaShare) <= 3500 &&
+        daysBetweenISO(r.date, row.date) <= 10
+    );
+    const matchDanielOut = analyzedRows.find(
+      (r) =>
+        r.flow === 'out' &&
+        /daniel.*santiagos|traspaso\s+a\s*:?\s*daniel\b/i.test(stripAccents(String(r.description || '').toLowerCase())) &&
+        Math.abs(r.amount - fullCalc.danielShare) <= 3500 &&
+        daysBetweenISO(r.date, row.date) <= 10
+    );
+
+    const anySiblingOutMatched = Boolean(matchGabrielOut || matchNataliaOut || matchDanielOut);
+
+    if (anySiblingOutMatched || hasLatePrevMonthViasBase) {
+      row.abonoAction = 'vias_invoice';
+      row.abonoCategory = 'vias_invoice';
+      row.viasPaidSiblings = anySiblingOutMatched
+        ? {
+            gabriel: Boolean(matchGabrielOut),
+            natalia: Boolean(matchNataliaOut),
+            daniel: Boolean(matchDanielOut)
+          }
+        : { gabriel: true, natalia: true, daniel: true };
+      row.viasNetMode = 'income';
+      row.smartHint =
+        '🧾 Factura Vías SpA detectada → Descuenta automáticamente el % Neto transferido a tus hermanos accionistas (Gabriel 19,5%, Natalia 19,5%, Daniel 22%) y neutraliza sus traspasos en cartola.';
+    }
+  });
+
+  syncViasSiblingPayoutRows(analyzedRows);
+  return analyzedRows;
+}
+
+/**
+ * Calcula el desglose exacto de una compra con Factura de Vías SpA según el pacto familiar:
+ * - Quien compra se queda con el 100% del IVA (19%) + su % Neto (19,5%) + Papá (4,0%) + Mamá (15,5%) = IVA + 39% del Neto.
+ * - A los 3 hermanos les corresponde sobre el Monto Neto (Bruto / 1,19):
+ *   - Gabriel: 19,5% del Neto
+ *   - Natalia: 19,5% del Neto
+ *   - Daniel:  22,0% del Neto
+ * - Permite activar/desactivar individualmente a quién se le transfirió efectivamente su parte
+ *   y a quién se le retuvo/compensó (por cruce de facturas o deuda de retiros).
+ */
+export function calculateViasInvoiceSettlement(
+  grossAmount,
+  paidSiblings = { gabriel: true, natalia: true, daniel: true }
+) {
+  const gross = Math.max(0, Math.round(Number(grossAmount || 0)));
+  const netAmount = Math.round(gross / 1.19);
+  const ivaAmount = Math.max(0, gross - netAmount);
+
+  const mauricioShare = Math.round(netAmount * 0.195);
+  const papaShare = Math.round(netAmount * 0.04);
+  const mamaShare = Math.round(netAmount * 0.155);
+  const gabrielShare = Math.round(netAmount * 0.195);
+  const nataliaShare = Math.round(netAmount * 0.195);
+  const danielShare = Math.round(netAmount * 0.22);
+
+  const ownNet39 = Math.max(0, netAmount - gabrielShare - nataliaShare - danielShare);
+  const ownBaseTotal = ivaAmount + ownNet39;
+
+  const isPaidGabriel = Boolean(paidSiblings?.gabriel);
+  const isPaidNatalia = Boolean(paidSiblings?.natalia);
+  const isPaidDaniel = Boolean(paidSiblings?.daniel);
+
+  const paidGabriel = isPaidGabriel ? gabrielShare : 0;
+  const paidNatalia = isPaidNatalia ? nataliaShare : 0;
+  const paidDaniel = isPaidDaniel ? danielShare : 0;
+
+  const totalPaidToSiblings = paidGabriel + paidNatalia + paidDaniel;
+  const retainedSiblingsTotal =
+    (gabrielShare - paidGabriel) + (nataliaShare - paidNatalia) + (danielShare - paidDaniel);
+  const netCashForUser = Math.max(0, gross - totalPaidToSiblings);
+
+  return {
+    grossAmount: gross,
+    netAmount,
+    ivaAmount,
+    mauricioShare,
+    papaShare,
+    mamaShare,
+    ownNet39,
+    ownBaseTotal,
+    gabrielShare,
+    nataliaShare,
+    danielShare,
+    paidSiblings: {
+      gabriel: isPaidGabriel,
+      natalia: isPaidNatalia,
+      daniel: isPaidDaniel
+    },
+    paidGabriel,
+    paidNatalia,
+    paidDaniel,
+    totalPaidToSiblings,
+    retainedSiblingsTotal,
+    netCashForUser
+  };
+}
+
+/**
+ * Sincroniza las filas de la cartola cuando hay una o más Facturas Vías SpA (`abonoAction === 'vias_invoice'`):
+ * - Recalcula `row.viasSettlement` según los hermanos marcados como pagados (`row.viasPaidSiblings`).
+ * - Busca en la misma cartola las transferencias salientes a Gabriel, Natalia y/o Daniel y las
+ *   marca como `internal` (`vias_shareholder_payout`, ignoradas) si ese hermano está marcado como
+ *   transferido, o las restaura si se desmarca.
+ */
+export function syncViasSiblingPayoutRows(analyzedRows) {
+  if (!Array.isArray(analyzedRows)) return analyzedRows;
+
+  // 1. Restaurar filas que habían sido marcadas previamente por este sincronizador automático
+  analyzedRows.forEach((r) => {
+    if (r && r.autoLinkedByViasInvoice) {
+      r.status = 'forgotten_new';
+      r.internalType = null;
+      r.autoLinkedByViasInvoice = false;
+      r.selectedToImport = !r.isPreviousMonth;
+    }
+  });
+
+  // 2. Recorrer todos los abonos configurados como Factura Vías SpA
+  analyzedRows.forEach((row) => {
+    if (!row || row.flow !== 'in') return;
+    if (!row.viasPaidSiblings || typeof row.viasPaidSiblings !== 'object') {
+      row.viasPaidSiblings = { gabriel: true, natalia: true, daniel: true };
+    }
+    row.viasSettlement = calculateViasInvoiceSettlement(row.amount, row.viasPaidSiblings);
+
+    if (row.abonoAction !== 'vias_invoice') return;
+
+    const siblingRules = [
+      {
+        key: 'gabriel',
+        name: 'Gabriel Santiagos (19,5% Neto)',
+        share: row.viasSettlement.gabrielShare,
+        regex: /gabriel\s+santiagos|traspaso\s+a\s*:?\s*gabriel\b/i
+      },
+      {
+        key: 'natalia',
+        name: 'Natalia Santiagos (19,5% Neto)',
+        share: row.viasSettlement.nataliaShare,
+        regex: /natalia.*santiagos|traspaso\s+a\s*:?\s*natalia\b/i
+      },
+      {
+        key: 'daniel',
+        name: 'Daniel Santiagos (22% Neto)',
+        share: row.viasSettlement.danielShare,
+        regex: /daniel.*santiagos|traspaso\s+a\s*:?\s*daniel\b/i
+      }
+    ];
+
+    siblingRules.forEach((sib) => {
+      if (!row.viasPaidSiblings[sib.key]) return;
+      const targetOut = analyzedRows.find((r) => {
+        if (!r || r.flow !== 'out' || r.autoLinkedByViasInvoice) return false;
+        const desc = stripAccents(String(r.description || '').toLowerCase());
+        if (!sib.regex.test(desc)) return false;
+        const diff = Math.abs(Number(r.amount || 0) - sib.share);
+        return diff <= Math.max(5000, Math.round(sib.share * 0.05)) && daysBetweenISO(r.date, row.date) <= 12;
+      });
+
+      if (targetOut) {
+        targetOut.status = 'internal';
+        targetOut.internalType = 'vias_shareholder_payout';
+        targetOut.autoLinkedByViasInvoice = true;
+        targetOut.selectedToImport = false;
+        targetOut.smartHint = `🔄 Devolución a ${sib.name} por Factura Vías SpA del ${row.date} → Ya descontado del ingreso bruto de la factura (No suma como gasto).`;
+      }
+    });
+  });
+
+  return analyzedRows;
 }

@@ -1,7 +1,7 @@
 import {
   PAYMENT_METHODS,
   SAMPLE_BANK_STATEMENT_TEXT
-} from './data/defaults.js?v=21';
+} from './data/defaults.js?v=22';
 import {
   loadState,
   saveState,
@@ -17,27 +17,29 @@ import {
   setupAutoOnlineSync,
   exportStateToJsonString,
   importStateFromJsonString
-} from './services/storage.js?v=21';
+} from './services/storage.js?v=22';
 import {
   parseBankStatementText,
   reconcileStatementRows,
+  calculateViasInvoiceSettlement,
+  syncViasSiblingPayoutRows,
   cleanChileanAmount,
   formatLiveCLPInput,
   normalizeContactKey,
   extractContactDisplayName
-} from './services/reconciler.js?v=21';
+} from './services/reconciler.js?v=22';
 import {
   scanReceiptWithGemini,
   classifyStatementRowsWithGemini,
   getDemoScannedReceipt,
   generateMonthlyFamilyAuditWithGemini
-} from './services/geminiScanner.js?v=21';
-import { exportStateToExcel } from './services/excelExport.js?v=21';
+} from './services/geminiScanner.js?v=22';
+import { exportStateToExcel } from './services/excelExport.js?v=22';
 import {
   parseQuickNaturalExpense,
   buildInstallmentTransactions,
   getQuickPresetsForAuthor
-} from './services/smartInput.js?v=21';
+} from './services/smartInput.js?v=22';
 import {
   resolveTxBudgetMonth,
   calculateMonthlyFinancialSummary,
@@ -54,7 +56,7 @@ import {
   getAnnualSubscriptionsForMonth,
   applyDynamicAnnualSubscriptionsToMonthBudget,
   buildCoupleWhatsAppMessages
-} from './domain/financialEngine.js?v=21';
+} from './domain/financialEngine.js?v=22';
 
 // Estado global en memoria de la aplicación
 let appState = loadState();
@@ -3049,16 +3051,21 @@ function renderReconcileTab() {
                 if (row.status === 'internal') {
                   const isToWife = row.internalType === 'transfer_wife';
                   const isSelf = row.internalType === 'transfer_self';
+                  const isViasPayout = row.internalType === 'vias_shareholder_payout';
                   const badgeTitle = isToWife
                     ? '💖 RECARGA A FONDO FAMILIAR DE MARIE'
-                    : isSelf
-                      ? '🔄 ENTRE MIS CUENTAS (IGNORADO)'
-                      : '🟢 PAGO FACTURACIÓN CMR';
+                    : isViasPayout
+                      ? '🏢 LIQUIDACIÓN ACCIONISTA VÍAS SPA (YA DESCONTADO)'
+                      : isSelf
+                        ? '🔄 ENTRE MIS CUENTAS (IGNORADO)'
+                        : '🟢 PAGO FACTURACIÓN CMR';
                   const subText = isToWife
                     ? 'No suma como gasto; recarga el saldo disponible del Fondo Familiar de Marie.'
-                    : isSelf
-                      ? 'Traspaso entre tus propias cuentas (ej. Cta. Cte. ↔ FAN). Se ignora automáticamente.'
-                      : 'Pago de tarjeta CMR.';
+                    : isViasPayout
+                      ? (row.smartHint || 'Devolución de % Neto de Factura Vías SpA a hermano accionista. Ya fue descontado de la factura y no suma como gasto.')
+                      : isSelf
+                        ? 'Traspaso entre tus propias cuentas (ej. Cta. Cte. ↔ FAN). Se ignora automáticamente.'
+                        : 'Pago de tarjeta CMR.';
 
                   return `
                     <div class="rec-row rec-row-internal">
@@ -3071,11 +3078,12 @@ function renderReconcileTab() {
                       <div class="rec-row-controls">
                         <select class="text-input rec-internal-type-select" data-idx="${idx}" style="width:auto;">
                           <option value="transfer_self" ${row.internalType === 'transfer_self' ? 'selected' : ''}>🔄 Entre mis cuentas (Ignorar)</option>
+                          <option value="vias_shareholder_payout" ${row.internalType === 'vias_shareholder_payout' ? 'selected' : ''}>🏢 Liquidación Accionista Vías SpA (Ignorar)</option>
                           <option value="transfer_wife" ${row.internalType === 'transfer_wife' ? 'selected' : ''}>💖 Recarga a Fondo Familiar de Marie</option>
                           <option value="cmr_payment" ${row.internalType === 'cmr_payment' ? 'selected' : ''}>🟢 Pago Facturación CMR</option>
                           <option value="convert_to_expense">💸 Es un Gasto Real (Pago a 3º)</option>
                         </select>
-                        ${row.internalType !== 'transfer_self' ? `
+                        ${row.internalType !== 'transfer_self' && row.internalType !== 'vias_shareholder_payout' ? `
                           <label class="rec-checkbox-label">
                             <input type="checkbox" class="rec-select-check" data-idx="${idx}" ${row.selectedToImport ? 'checked' : ''} />
                             <strong>Registrar (${formatCLP(row.amount)})</strong>
@@ -3089,14 +3097,23 @@ function renderReconcileTab() {
                 }
 
                 if (row.status === 'incoming_abono') {
+                  const vias = row.viasSettlement || calculateViasInvoiceSettlement(
+                    row.amount,
+                    row.viasPaidSiblings || { gabriel: true, natalia: true, daniel: true }
+                  );
+                  const effectiveIncomeBase = row.abonoAction === 'vias_invoice' ? vias.netCashForUser : row.amount;
                   const pct = Math.max(0, Math.min(100, Math.round(Number(row.extraBudgetPct ?? 20))));
-                  const toBud = Math.round((row.amount * pct) / 100);
-                  const toSav = Math.max(0, row.amount - toBud);
+                  const toBud = Math.round((effectiveIncomeBase * pct) / 100);
+                  const toSav = Math.max(0, effectiveIncomeBase - toBud);
+                  const viasNetMode = row.viasNetMode || 'income';
+
                   const pillText = row.isLatePrevMonthSalary
-                    ? `💼 SUELDO FIN DE MES ANTERIOR → PARA ${getMonthNameLabel(activeYearMonth).toUpperCase()} (+${formatCLP(row.amount)})`
-                    : row.abonoAction === 'base_income'
-                      ? `💼 INGRESO BASE DEL MES (+${formatCLP(row.amount)})`
-                      : `💰 ABONO RECIBIDO (+${formatCLP(row.amount)})`;
+                    ? `💼 INGRESO BASE FIN DE MES ANTERIOR → PARA ${getMonthNameLabel(activeYearMonth).toUpperCase()} (+${formatCLP(row.amount)})`
+                    : row.abonoAction === 'vias_invoice'
+                      ? `🧾 FACTURA VÍAS SPA: BRUTO ${formatCLP(row.amount)} → NETO TUYO +${formatCLP(vias.netCashForUser)}`
+                      : row.abonoAction === 'base_income'
+                        ? `💼 INGRESO BASE DEL MES (+${formatCLP(row.amount)})`
+                        : `💰 ABONO RECIBIDO (+${formatCLP(row.amount)})`;
 
                   return `
                     <div class="rec-row rec-row-incoming">
@@ -3109,6 +3126,7 @@ function renderReconcileTab() {
                       <div class="rec-row-controls" style="flex-wrap:wrap;gap:8px;">
                         <select class="text-input rec-abono-action-select" data-idx="${idx}" style="width:auto;">
                           <option value="base_income" ${row.abonoAction === 'base_income' ? 'selected' : ''}>💼 Sueldo / Ingreso Base de ${getMonthNameLabel(activeYearMonth)} (Parte de tus $2.800.000)</option>
+                          <option value="vias_invoice" ${row.abonoAction === 'vias_invoice' ? 'selected' : ''}>🧾 Factura Vías SpA (Liquidación Accionistas: IVA + 39% tuyo/papás y % hermanos)</option>
                           <option value="income" ${row.abonoAction === 'income' ? 'selected' : ''}>💰 Ingreso Extra Adicional (Diversificar % Presupuesto / Ahorro)</option>
                           <option value="reimburse" ${row.abonoAction === 'reimburse' ? 'selected' : ''}>↩️ Reembolso / Cuenta Compartida (Suma cupo)</option>
                           <option value="loan_received" ${row.abonoAction === 'loan_received' ? 'selected' : ''}>📥 Me prestaron plata (Debo devolverlo)</option>
@@ -3116,7 +3134,47 @@ function renderReconcileTab() {
                           <option value="savings_withdrawal" ${row.abonoAction === 'savings_withdrawal' ? 'selected' : ''}>🚨 Rescate desde mis Ahorros</option>
                           <option value="ignore" ${row.abonoAction === 'ignore' ? 'selected' : ''}>🙈 Ignorar este abono</option>
                         </select>
-                        ${row.abonoAction === 'income' ? `
+                        ${row.abonoAction === 'vias_invoice' ? `
+                          <div style="width:100%;display:flex;flex-direction:column;gap:8px;background:rgba(16,185,129,0.07);border:1px solid rgba(16,185,129,0.28);padding:10px 12px;border-radius:10px;font-size:0.77rem;">
+                            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+                              <strong>🏢 Desglose Factura Vías SpA (Bruto ${formatCLP(vias.grossAmount)} = Neto ${formatCLP(vias.netAmount)} + IVA ${formatCLP(vias.ivaAmount)}):</strong>
+                              <span style="font-weight:700;color:var(--accent-primary);">
+                                Tu Base Fija (IVA + 39% Neto [Tuyo 19,5% + Papá 4% + Mamá 15,5%]): ${formatCLP(vias.ownBaseTotal)}
+                              </span>
+                            </div>
+                            <div style="display:flex;flex-direction:column;gap:4px;">
+                              <span style="font-weight:600;color:var(--text-secondary);">Marca a qué hermanos les transferiste su % Neto de esta factura (se descuentan del bruto y se neutraliza su transferencia en cartola):</span>
+                              <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:2px;">
+                                <label style="display:flex;align-items:center;gap:5px;padding:4px 9px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border-subtle);cursor:pointer;">
+                                  <input type="checkbox" class="rec-vias-sibling-check" data-idx="${idx}" data-sibling="gabriel" ${vias.paidSiblings.gabriel ? 'checked' : ''} />
+                                  <span><strong>Gabriel (19,5%):</strong> ${formatCLP(vias.gabrielShare)} ${vias.paidSiblings.gabriel ? '💸 Transferido' : '🤝 Retenido/Compensado'}</span>
+                                </label>
+                                <label style="display:flex;align-items:center;gap:5px;padding:4px 9px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border-subtle);cursor:pointer;">
+                                  <input type="checkbox" class="rec-vias-sibling-check" data-idx="${idx}" data-sibling="natalia" ${vias.paidSiblings.natalia ? 'checked' : ''} />
+                                  <span><strong>Natalia (19,5%):</strong> ${formatCLP(vias.nataliaShare)} ${vias.paidSiblings.natalia ? '💸 Transferido' : '🤝 Compensado/Cruce'}</span>
+                                </label>
+                                <label style="display:flex;align-items:center;gap:5px;padding:4px 9px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border-subtle);cursor:pointer;">
+                                  <input type="checkbox" class="rec-vias-sibling-check" data-idx="${idx}" data-sibling="daniel" ${vias.paidSiblings.daniel ? 'checked' : ''} />
+                                  <span><strong>Daniel (22,0%):</strong> ${formatCLP(vias.danielShare)} ${vias.paidSiblings.daniel ? '💸 Transferido' : '🤝 Retenido (Deuda)'}</span>
+                                </label>
+                              </div>
+                            </div>
+                            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding-top:6px;border-top:1px dashed rgba(16,185,129,0.3);">
+                              <span>
+                                💵 <strong>Liquidez neta en tu cuenta:</strong> ${formatCLP(vias.grossAmount)} − ${formatCLP(vias.totalPaidToSiblings)} pagado a hermanos = <strong style="color:#059669;font-size:0.84rem;">+${formatCLP(vias.netCashForUser)}</strong>
+                              </span>
+                              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                                <span>Destino del Neto:</span>
+                                <select class="text-input rec-vias-net-mode-select" data-idx="${idx}" style="width:auto;padding:4px 8px;font-size:0.75rem;">
+                                  <option value="income" ${viasNetMode === 'income' ? 'selected' : ''}>💰 Ingreso Extra Neto (% Presupuesto / Ahorro)</option>
+                                  <option value="reimburse" ${viasNetMode === 'reimburse' ? 'selected' : ''}>↩️ Reembolso de Compra con Factura (Suma cupo)</option>
+                                  <option value="base_income" ${viasNetMode === 'base_income' ? 'selected' : ''}>💼 Imputar a mi Ingreso Base del mes</option>
+                                </select>
+                              </div>
+                            </div>
+                          </div>
+                        ` : ''}
+                        ${(row.abonoAction === 'income' || (row.abonoAction === 'vias_invoice' && viasNetMode === 'income')) ? `
                           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.28);padding:6px 10px;border-radius:10px;">
                             <label style="display:flex;align-items:center;gap:4px;font-size:0.76rem;font-weight:700;">
                               <span>% a Presup.:</span>
@@ -3145,7 +3203,7 @@ function renderReconcileTab() {
                             </span>
                           </div>
                         ` : ''}
-                        ${row.abonoAction === 'reimburse' ? `
+                        ${(row.abonoAction === 'reimburse' || (row.abonoAction === 'vias_invoice' && viasNetMode === 'reimburse')) ? `
                           <select class="text-input rec-reimburse-cat-select" data-idx="${idx}" style="width:auto;">
                             ${categories.map((c) => `
                               <option value="${c.id}" ${row.reimburseCategoryId === c.id ? 'selected' : ''}>Devolver a: ${c.icon} ${c.name}</option>
@@ -3155,7 +3213,7 @@ function renderReconcileTab() {
                         ${row.abonoAction !== 'ignore' ? `
                           <label class="rec-checkbox-label">
                             <input type="checkbox" class="rec-select-check" data-idx="${idx}" ${row.selectedToImport ? 'checked' : ''} />
-                            <strong>Confirmar ${formatCLP(row.amount)}</strong>
+                            <strong>Confirmar ${formatCLP(effectiveIncomeBase)}</strong>
                           </label>
                         ` : `
                           <strong class="rec-amount text-muted">Ignorado</strong>
@@ -4385,6 +4443,7 @@ function attachDynamicInputListeners() {
       if (val === 'convert_to_expense') {
         row.status = 'forgotten_new';
         row.internalType = null;
+        row.autoLinkedByViasInvoice = false;
         row.selectedToImport = true;
       } else {
         row.status = 'internal';
@@ -4400,10 +4459,42 @@ function attachDynamicInputListeners() {
       const row = reconcileState.analyzedRows?.[idx];
       if (!row) return;
       row.abonoAction = e.target.value;
-      if (row.abonoAction === 'income' && typeof row.extraBudgetPct !== 'number') {
+      if ((row.abonoAction === 'income' || row.abonoAction === 'vias_invoice') && typeof row.extraBudgetPct !== 'number') {
         row.extraBudgetPct = 20;
       }
+      if (row.abonoAction === 'vias_invoice') {
+        if (!row.viasPaidSiblings || typeof row.viasPaidSiblings !== 'object') {
+          row.viasPaidSiblings = { gabriel: true, natalia: true, daniel: true };
+        }
+        if (!row.viasNetMode) {
+          row.viasNetMode = 'income';
+        }
+      }
+      syncViasSiblingPayoutRows(reconcileState.analyzedRows);
       row.selectedToImport = e.target.value !== 'ignore';
+      renderApp();
+    };
+  });
+  document.querySelectorAll('.rec-vias-sibling-check').forEach((chk) => {
+    chk.onchange = (e) => {
+      const idx = Number(chk.dataset.idx);
+      const sib = chk.dataset.sibling;
+      const row = reconcileState.analyzedRows?.[idx];
+      if (!row || !sib) return;
+      if (!row.viasPaidSiblings || typeof row.viasPaidSiblings !== 'object') {
+        row.viasPaidSiblings = { gabriel: true, natalia: true, daniel: true };
+      }
+      row.viasPaidSiblings[sib] = e.target.checked;
+      syncViasSiblingPayoutRows(reconcileState.analyzedRows);
+      renderApp();
+    };
+  });
+  document.querySelectorAll('.rec-vias-net-mode-select').forEach((sel) => {
+    sel.onchange = (e) => {
+      const idx = Number(sel.dataset.idx);
+      const row = reconcileState.analyzedRows?.[idx];
+      if (!row) return;
+      row.viasNetMode = e.target.value || 'income';
       renderApp();
     };
   });
@@ -5596,7 +5687,7 @@ document.addEventListener('click', async (e) => {
           verifiedCount++;
         }
       } else if (row.selectedToImport) {
-        if (row.status === 'internal' && row.internalType !== 'transfer_self') {
+        if (row.status === 'internal' && row.internalType !== 'transfer_self' && row.internalType !== 'vias_shareholder_payout') {
           appState.transactions.push({
             id: `tx_rec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
             bankFingerprint: row.fingerprint,
@@ -5613,7 +5704,20 @@ document.addEventListener('click', async (e) => {
           });
           importedCount++;
         } else if (row.status === 'incoming_abono' && row.abonoAction !== 'ignore') {
-          if (contactKey) {
+          const isViasInvoice = row.abonoAction === 'vias_invoice';
+          const vias = isViasInvoice
+            ? calculateViasInvoiceSettlement(
+                row.amount,
+                row.viasPaidSiblings || { gabriel: true, natalia: true, daniel: true }
+              )
+            : null;
+          const effectiveAmount = isViasInvoice ? vias.netCashForUser : row.amount;
+          const effectiveAction = isViasInvoice ? (row.viasNetMode || 'income') : row.abonoAction;
+          const viasNoteSuffix = isViasInvoice
+            ? ` (Factura Vías SpA: Bruto ${formatCLP(vias.grossAmount)} − Hermanos ${formatCLP(vias.totalPaidToSiblings)} = Neto tuyo ${formatCLP(vias.netCashForUser)})`
+            : '';
+
+          if (contactKey && !isViasInvoice) {
             appState.learnedContacts[contactKey] = {
               flow: 'in',
               abonoAction: row.abonoAction,
@@ -5621,32 +5725,35 @@ document.addEventListener('click', async (e) => {
               updatedAt: nowISO
             };
           }
-          if (row.abonoAction === 'reimburse') {
+          if (effectiveAction === 'reimburse') {
             appState.transactions.push({
               id: `tx_rec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
               bankFingerprint: row.fingerprint,
               date: row.date,
               type: 'reimbursement',
-              amount: row.amount,
+              amount: effectiveAmount,
+              grossInvoiceAmount: isViasInvoice ? row.amount : undefined,
               categoryId: row.reimburseCategoryId || 'supermercado',
               paymentMethod: row.paymentMethod,
               author: userPrefs.activeAuthor || 'el',
-              note: `${row.description} (Reembolso en cartola)`,
+              note: isViasInvoice
+                ? `${row.description}${viasNoteSuffix}`
+                : `${row.description} (Reembolso en cartola)`,
               reconciled: true,
               createdAt: nowISO,
               updatedAt: nowISO
             });
           } else if (
-            row.abonoAction === 'loan_received' ||
-            row.abonoAction === 'loan_collected' ||
-            row.abonoAction === 'savings_withdrawal'
+            effectiveAction === 'loan_received' ||
+            effectiveAction === 'loan_collected' ||
+            effectiveAction === 'savings_withdrawal'
           ) {
             appState.transactions.push({
               id: `tx_rec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
               bankFingerprint: row.fingerprint,
               date: row.date,
-              type: row.abonoAction,
-              amount: row.amount,
+              type: effectiveAction,
+              amount: effectiveAmount,
               categoryId: 'prestamo_encargo',
               paymentMethod: row.paymentMethod,
               author: userPrefs.activeAuthor || 'el',
@@ -5655,7 +5762,7 @@ document.addEventListener('click', async (e) => {
               createdAt: nowISO,
               updatedAt: nowISO
             });
-          } else if (row.abonoAction === 'base_income') {
+          } else if (effectiveAction === 'base_income') {
             const targetYm = row.targetBudgetMonth || activeYearMonth;
             appState.transactions.push({
               id: `tx_rec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -5663,13 +5770,16 @@ document.addEventListener('click', async (e) => {
               date: row.date,
               budgetMonth: targetYm,
               type: 'income',
-              amount: row.amount,
+              amount: effectiveAmount,
+              grossInvoiceAmount: isViasInvoice ? row.amount : undefined,
               categoryId: 'sueldo_base',
               paymentMethod: row.paymentMethod,
               author: userPrefs.activeAuthor || 'el',
               note: row.isLatePrevMonthSalary
-                ? `${row.description} (Sueldo fin de mes anterior → Imputado a ${getMonthNameLabel(targetYm)})`
-                : `${row.description} (Ingreso Base en cartola)`,
+                ? `${row.description} (Ingreso Base fin de mes anterior → Imputado a ${getMonthNameLabel(targetYm)})`
+                : isViasInvoice
+                  ? `${row.description}${viasNoteSuffix}`
+                  : `${row.description} (Ingreso Base en cartola)`,
               isBaseIncomePart: true,
               isExtraIncome: false,
               reconciled: true,
@@ -5692,11 +5802,14 @@ document.addEventListener('click', async (e) => {
               date: row.date,
               budgetMonth: targetYm,
               type: 'income',
-              amount: row.amount,
+              amount: effectiveAmount,
+              grossInvoiceAmount: isViasInvoice ? row.amount : undefined,
               categoryId: 'ingreso_extra',
               paymentMethod: row.paymentMethod,
               author: userPrefs.activeAuthor || 'el',
-              note: `${row.description} (Ingreso Extra en cartola)`,
+              note: isViasInvoice
+                ? `${row.description}${viasNoteSuffix}`
+                : `${row.description} (Ingreso Extra en cartola)`,
               isExtraIncome: true,
               extraIncomeMode: allocMode,
               reconciled: true,
