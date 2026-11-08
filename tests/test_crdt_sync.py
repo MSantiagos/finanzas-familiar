@@ -367,6 +367,57 @@ class TestCRDTMergeEngine(unittest.TestCase):
         self.assertIn("deletedPatrimonyIds", code_gs)
         self.assertIn("patrimonyItems", code_gs)
 
+        # Verificar sintaxis JavaScript real de todos los módulos frontend con JavaScriptCore (si está disponible)
+        jsc_path = "/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc"
+        if os.path.exists(jsc_path):
+            import re
+            import subprocess
+
+            js_files = [
+                os.path.join(root_dir, "src", "data", "defaults.js"),
+                os.path.join(root_dir, "src", "domain", "financialEngine.js"),
+                os.path.join(root_dir, "src", "services", "reconciler.js"),
+                os.path.join(root_dir, "src", "services", "storage.js"),
+                os.path.join(root_dir, "src", "services", "geminiScanner.js"),
+                os.path.join(root_dir, "src", "services", "excelExport.js"),
+                os.path.join(root_dir, "src", "services", "smartInput.js"),
+                os.path.join(root_dir, "src", "app.js"),
+                os.path.join(root_dir, "sw.js"),
+            ]
+            for js_file in js_files:
+                with open(js_file, "r", encoding="utf-8") as jf:
+                    code = jf.read()
+                out_lines = []
+                skip_import = False
+                for line in code.splitlines():
+                    if skip_import:
+                        out_lines.append("// " + line)
+                        if "from " in line:
+                            skip_import = False
+                        continue
+                    if re.match(r"^\s*import\b", line):
+                        out_lines.append("// " + line)
+                        if "from " not in line:
+                            skip_import = True
+                        continue
+                    line2 = re.sub(r"^(\s*)export\s+default\s+", r"\1", line)
+                    line2 = re.sub(
+                        r"^(\s*)export\s+(async\s+function|function|const|let|var|class)\b",
+                        r"\1\2",
+                        line2,
+                    )
+                    line2 = re.sub(r"^(\s*)export\s*\{[^}]*\};?", r"\1", line2)
+                    out_lines.append(line2)
+                clean_code = "\n".join(out_lines)
+                runner = f"new Function({json.dumps(clean_code)}); print('OK');"
+                res = subprocess.run([jsc_path, "-e", runner], capture_output=True, text=True)
+                self.assertEqual(
+                    res.returncode,
+                    0,
+                    f"Syntax error in {js_file}: {res.stdout} {res.stderr}",
+                )
+                self.assertIn("OK", res.stdout, f"Syntax check failed for {js_file}: {res.stdout}")
+
 
 class TestFinanzasHTTPServer(unittest.TestCase):
     def setUp(self):

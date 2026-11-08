@@ -1539,7 +1539,6 @@ export function reconcileStatementRows(
 
     // 3.5. Buscar coincidencia o vinculación automática con Cuenta Fija mensual (Arriendo, GGCC, Luz, Agua, Gas, Internet)
     const matchedFixedTemplate = matchFixedTemplateFromStatementRow(row, fixedTemplates);
-    const rowYearMonth = String(row.date || '').slice(0, 7);
     if (matchedFixedTemplate && rowYearMonth) {
       const existingFixedTx = allTxs.find(
         (tx) =>
