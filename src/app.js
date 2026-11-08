@@ -214,7 +214,8 @@ let reconcileState = {
   rawText: '',
   defaultSourceMethod: 'cmr_falabella',
   analyzedRows: null,
-  filterTab: 'review' // 'review' | 'internal' | 'matched' | 'all'
+  filterTab: 'review', // 'review' | 'internal' | 'matched' | 'all'
+  onlyActiveMonth: true
 };
 
 let isEditingBudgets = false;
@@ -2731,16 +2732,24 @@ function renderReconcileTab() {
   const categories = appState.categories || [];
   const analyzed = reconcileState.analyzedRows;
 
-  const matchedCount = analyzed ? analyzed.filter((r) => r.status === 'matched_duplicate').length : 0;
-  const internalCount = analyzed ? analyzed.filter((r) => r.status === 'internal').length : 0;
-  const incomingCount = analyzed ? analyzed.filter((r) => r.status === 'incoming_abono').length : 0;
-  const forgottenCount = analyzed ? analyzed.filter((r) => r.status === 'forgotten_new').length : 0;
+  const prevMonthCount = analyzed ? analyzed.filter((r) => r.isPreviousMonth).length : 0;
+  const visibleAnalyzed = analyzed
+    ? analyzed.filter((r) => !reconcileState.onlyActiveMonth || !r.isPreviousMonth)
+    : null;
+
+  const matchedCount = visibleAnalyzed ? visibleAnalyzed.filter((r) => r.status === 'matched_duplicate').length : 0;
+  const internalCount = visibleAnalyzed ? visibleAnalyzed.filter((r) => r.status === 'internal').length : 0;
+  const incomingCount = visibleAnalyzed ? visibleAnalyzed.filter((r) => r.status === 'incoming_abono').length : 0;
+  const forgottenCount = visibleAnalyzed ? visibleAnalyzed.filter((r) => r.status === 'forgotten_new').length : 0;
   const reviewCount = forgottenCount + incomingCount;
 
   const filteredRows = analyzed
     ? analyzed
         .map((row, originalIdx) => ({ row, originalIdx }))
         .filter(({ row }) => {
+          if (reconcileState.onlyActiveMonth && row.isPreviousMonth) {
+            return false;
+          }
           if (reconcileState.filterTab === 'review') {
             return row.status === 'forgotten_new' || row.status === 'incoming_abono';
           }
@@ -2760,7 +2769,7 @@ function renderReconcileTab() {
         <div>
           <h2 class="section-title">🔍 Conciliador Inteligente (Banco de Chile & CMR)</h2>
           <p class="section-subtitle">
-            Sube tu archivo <code>.xls</code> o <code>.xlsx</code>: bloquea duplicados, cruza préstamos de Juanito y pre-clasifica abonos para que solo confirmes con 1 clic.
+            Sube 1 o varias cartolas <code>.xls</code> / <code>.xlsx</code> a la vez: detecta cada cuenta automáticamente, filtra meses anteriores y cruza traspasos entre tus cuentas y pagos CMR.
           </p>
         </div>
         <button type="button" class="btn-secondary" data-action="load-sample-statement">
@@ -2771,11 +2780,11 @@ function renderReconcileTab() {
       <div class="reconcile-input-area">
         <div class="reconcile-toolbar">
           <label class="btn-upload-csv">
-            📂 Subir Cartola Banco de Chile / CMR (.xls, .xlsx, .csv)
-            <input type="file" id="statement-file-input" accept=".csv,.txt,.xlsx,.xls" hidden />
+            📂 Subir 1 o más Cartolas Banco de Chile / CMR (.xls, .xlsx, .csv)
+            <input type="file" id="statement-file-input" accept=".csv,.txt,.xlsx,.xls" multiple hidden />
           </label>
           <div class="source-default-wrap">
-            <span>Cuenta de la cartola:</span>
+            <span>Cuenta por defecto:</span>
             <select id="reconcile-default-pm" class="text-input" style="width:auto;">
               ${PAYMENT_METHODS.map((pm) => `
                 <option value="${pm.id}" ${reconcileState.defaultSourceMethod === pm.id ? 'selected' : ''}>${pm.icon} ${pm.name}</option>
@@ -2788,7 +2797,7 @@ function renderReconcileTab() {
           id="statement-textarea"
           class="statement-textarea"
           rows="4"
-          placeholder="Sube el archivo arriba o pega aquí las líneas de tu cartola..."
+          placeholder="Sube 1 o más archivos arriba o pega aquí las líneas de tus cartolas..."
         >${reconcileState.rawText}</textarea>
 
         <button type="button" class="btn-primary-giant" data-action="analyze-statement">
@@ -2798,6 +2807,21 @@ function renderReconcileTab() {
 
       ${analyzed ? `
         <div class="reconcile-results">
+          ${prevMonthCount > 0 ? `
+            <div class="reconcile-month-filter-banner" style="margin-bottom:14px; padding:12px 16px; border-radius:12px; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.28); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+              <div>
+                <strong>🛡️ Filtro de Inicio Limpio (${getMonthNameLabel(activeYearMonth)}):</strong>
+                <span style="font-size:0.88rem; opacity:0.9;">
+                  Se detectaron <strong>${prevMonthCount} movimientos de meses anteriores (Octubre/Septiembre)</strong> en tus cartolas. ${reconcileState.onlyActiveMonth ? 'Están ocultos y desmarcados automáticamente para no alterar tu punto de partida de Noviembre.' : 'Están visibles en la lista.'}
+                </span>
+              </div>
+              <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:700; font-size:0.88rem;">
+                <input type="checkbox" id="rec-only-active-month-check" ${reconcileState.onlyActiveMonth ? 'checked' : ''} />
+                Conciliar solo ${getMonthNameLabel(activeYearMonth)}
+              </label>
+            </div>
+          ` : ''}
+
           <!-- Sub-pestañas de filtrado para evitar ruido visual -->
           <div class="reconcile-filter-tabs">
             <button type="button" class="rec-filter-btn ${reconcileState.filterTab === 'review' ? 'active' : ''}" data-action="set-rec-filter" data-filter="review">
@@ -2810,7 +2834,7 @@ function renderReconcileTab() {
               ✅ Ya Registrados (${matchedCount})
             </button>
             <button type="button" class="rec-filter-btn ${reconcileState.filterTab === 'all' ? 'active' : ''}" data-action="set-rec-filter" data-filter="all">
-              📋 Todos (${analyzed.length})
+              📋 Todos (${visibleAnalyzed ? visibleAnalyzed.length : 0})
             </button>
             ${forgottenCount > 0 ? `
               <button type="button" class="btn-secondary-sm" data-action="ai-classify-statement" style="margin-left:auto;">
@@ -3948,23 +3972,32 @@ function attachDynamicInputListeners() {
     };
   }
 
-  // Subir archivo CSV/Excel de cartola bancaria
+  // Subir 1 o más archivos CSV/Excel de cartola bancaria
   const stmtFileInput = document.getElementById('statement-file-input');
   if (stmtFileInput) {
     stmtFileInput.onchange = async (e) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      const ext = file.name.split('.').pop().toLowerCase();
+      const files = Array.from(e.target.files || []);
+      if (files.length === 0) return;
 
-      if ((ext === 'xlsx' || ext === 'xls') && window.XLSX) {
-        const data = await file.arrayBuffer();
-        const wb = window.XLSX.read(data, { type: 'array' });
-        const firstSheet = wb.Sheets[wb.SheetNames[0]];
-        const csvText = window.XLSX.utils.sheet_to_csv(firstSheet, { FS: ';' });
-        reconcileState.rawText = csvText;
-      } else {
-        reconcileState.rawText = await file.text();
+      const textChunks = [];
+      for (const file of files) {
+        const ext = file.name.split('.').pop().toLowerCase();
+        if ((ext === 'xlsx' || ext === 'xls') && window.XLSX) {
+          const data = await file.arrayBuffer();
+          const wb = window.XLSX.read(data, { type: 'array' });
+          const firstSheet = wb.Sheets[wb.SheetNames[0]];
+          const csvText = window.XLSX.utils.sheet_to_csv(firstSheet, {
+            FS: ';',
+            raw: false,
+            dateNF: 'yyyy-mm-dd'
+          });
+          textChunks.push(csvText);
+        } else {
+          textChunks.push(await file.text());
+        }
       }
+
+      reconcileState.rawText = textChunks.join('\n');
 
       if (/;CENTRAL;|;PAGO:|BANCO DE CHILE/i.test(reconcileState.rawText)) {
         reconcileState.defaultSourceMethod = 'bch_vista';
@@ -3985,15 +4018,45 @@ function attachDynamicInputListeners() {
           appState.familyConfig?.wifeName,
           appState.transactions,
           appState.learnedContacts || {},
-          appState.fixedTemplates || []
+          appState.fixedTemplates || [],
+          { activeYearMonth, onlyActiveMonth: reconcileState.onlyActiveMonth }
         );
-        const needReview = reconcileState.analyzedRows.filter(
+        const visibleRows = reconcileState.analyzedRows.filter(
+          (r) => !reconcileState.onlyActiveMonth || !r.isPreviousMonth
+        );
+        const needReview = visibleRows.filter(
           (r) => r.status === 'forgotten_new' || r.status === 'incoming_abono'
         ).length;
         reconcileState.filterTab = needReview > 0 ? 'review' : 'all';
-        showToast(`✅ Cartola analizada: ${rows.length} movimientos procesados`, 'success');
+        showToast(
+          `✅ ${files.length} cartola(s) analizada(s): ${visibleRows.length} movimientos de ${getMonthNameLabel(activeYearMonth)} listos`,
+          'success'
+        );
       } else {
         showToast('📂 Archivo cargado. Haz clic en "Analizar Cartola"', 'success');
+      }
+      renderApp();
+    };
+  }
+
+  const onlyActiveMonthCheck = document.getElementById('rec-only-active-month-check');
+  if (onlyActiveMonthCheck) {
+    onlyActiveMonthCheck.onchange = (e) => {
+      reconcileState.onlyActiveMonth = Boolean(e.target.checked);
+      if (reconcileState.analyzedRows) {
+        reconcileState.analyzedRows.forEach((row) => {
+          if (row.isPreviousMonth) {
+            if (reconcileState.onlyActiveMonth) {
+              row.selectedToImport = false;
+            } else {
+              row.selectedToImport =
+                row.status === 'forgotten_new' ||
+                (row.status === 'incoming_abono' && row.abonoAction !== 'ignore') ||
+                (row.status === 'internal' &&
+                  (row.internalType === 'transfer_wife' || row.internalType === 'cmr_payment'));
+            }
+          }
+        });
       }
       renderApp();
     };
@@ -5076,7 +5139,8 @@ document.addEventListener('click', async (e) => {
       appState.familyConfig?.wifeName,
       appState.transactions,
       appState.learnedContacts || {},
-      appState.fixedTemplates || []
+      appState.fixedTemplates || [],
+      { activeYearMonth, onlyActiveMonth: reconcileState.onlyActiveMonth }
     );
     reconcileState.filterTab = 'review';
     showToast('🔍 Cartola ejemplo analizada: revisa la pestaña "Por Confirmar"', 'success');
@@ -5106,13 +5170,17 @@ document.addEventListener('click', async (e) => {
       appState.familyConfig?.wifeName,
       appState.transactions,
       appState.learnedContacts || {},
-      appState.fixedTemplates || []
+      appState.fixedTemplates || [],
+      { activeYearMonth, onlyActiveMonth: reconcileState.onlyActiveMonth }
     );
-    const needReview = reconcileState.analyzedRows.filter(
+    const visibleRows = reconcileState.analyzedRows.filter(
+      (r) => !reconcileState.onlyActiveMonth || !r.isPreviousMonth
+    );
+    const needReview = visibleRows.filter(
       (r) => r.status === 'forgotten_new' || r.status === 'incoming_abono'
     ).length;
     reconcileState.filterTab = needReview > 0 ? 'review' : 'all';
-    showToast(`✅ ${rows.length} movimientos cruzados con tu historial`, 'success');
+    showToast(`✅ ${visibleRows.length} movimientos de ${getMonthNameLabel(activeYearMonth)} cruzados con tu historial`, 'success');
     renderApp();
     return;
   }
@@ -5235,6 +5303,8 @@ document.addEventListener('click', async (e) => {
               paymentMethod: row.paymentMethod,
               author: userPrefs.activeAuthor || 'el',
               note: `${row.description} (Abono en cartola)`,
+              isExtraIncome: true,
+              extraIncomeMode: 'savings',
               reconciled: true,
               createdAt: nowISO,
               updatedAt: nowISO

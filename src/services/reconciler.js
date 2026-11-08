@@ -62,6 +62,12 @@ export function isValidStatementDate(rawDate) {
   if (!rawDate) return false;
   const str = String(rawDate).trim();
 
+  // Soporte para número serial de fecha Excel (ej. 46333 -> 2026-11-07)
+  if (/^\d{5}$/.test(str)) {
+    const serial = parseInt(str, 10);
+    return serial >= 36526 && serial <= 65000;
+  }
+
   const ymd = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
   if (ymd) {
     const y = parseInt(ymd[1], 10);
@@ -98,6 +104,15 @@ export function normalizeDateToISO(rawDate, fallbackYearMonth = '2026-10') {
 
   if (!rawDate) return `${safeFallbackYM}-01`;
   const str = String(rawDate).trim();
+
+  // Convertir número serial de fecha Excel (base 1899-12-30) a YYYY-MM-DD
+  if (/^\d{5}$/.test(str)) {
+    const serial = parseInt(str, 10);
+    if (serial >= 36526 && serial <= 65000) {
+      const utcMs = Date.UTC(1899, 11, 30) + serial * 86400000;
+      return new Date(utcMs).toISOString().slice(0, 10);
+    }
+  }
 
   const ymdMatch = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
   if (ymdMatch) {
@@ -315,6 +330,7 @@ export function detectInternalOrCardPayment(
   if (
     lower.includes('pago cmr') ||
     lower.includes('pago tarjeta') ||
+    lower.includes('tarjeta cmr') ||
     lower.includes('estado de cuenta') ||
     lower.includes('abono cmr') ||
     lower.includes('pago automatico cmr') ||
@@ -347,8 +363,17 @@ export function detectInternalOrCardPayment(
     return lower.includes(cleanKw);
   });
 
+  // En Banco de Chile, los traspasos propios entre cuentas del mismo titular vienen como "Traspaso A Cuenta:000004422049" o "Traspaso De Cuenta:001380682400"
+  const isOwnAccountNumberOrPrefix =
+    /traspaso\s+(?:a|de)\s+cuenta\s*:/i.test(lower) ||
+    lower.includes('001380682400') ||
+    lower.includes('000004422049') ||
+    lower.includes('00-138-06824-00') ||
+    lower.includes('00-000-44220-49');
+
   const isSelfKeyword =
     matchesHusband ||
+    isOwnAccountNumberOrPrefix ||
     lower.includes('cuenta fan') ||
     lower.includes('cta fan') ||
     lower.includes('mismo titular') ||
@@ -366,7 +391,7 @@ function isSummaryOrNoiseStatementLine(description) {
   const clean = stripAccents(String(description || '').toLowerCase().trim());
   if (!clean) return true;
   if (
-    /^(?:fecha|descripcion|movimiento|detalle|glosa|cartola|resumen|totales|total\b|subtotal\b|saldo\s+inicial|saldo\s+final|saldo\s+anterior|saldo\s+disponible|saldo\s+contable|saldo\s+al\s+dia|monto\s+total|pago\s+minimo)/i.test(
+    /^(?:fecha|descripcion|movimiento|detalle|glosa|cartola|resumen|totales|total\b|subtotal\b|saldo\s+inicial|saldo\s+final|saldo\s+anterior|saldo\s+disponible|saldo\s+contable|saldo\s+al\s+dia|monto\s+total|pago\s+minimo|sr\(a\)|rut:|cuenta:|moneda:|movimientos\s+al|saldos\s+al|informate\s+sobre)/i.test(
       clean
     )
   ) {
@@ -378,10 +403,10 @@ function isSummaryOrNoiseStatementLine(description) {
 function isIncomingStatementDescription(description) {
   const clean = stripAccents(String(description || '').toLowerCase().trim());
   // Excluir pagos de tarjeta CMR ("ABONO CMR") para que se procesen como pago de tarjeta
-  if (/abono\s+cmr|pago\s+cmr|pago\s+tarjeta/i.test(clean)) return false;
+  if (/abono\s+cmr|pago\s+cmr|pago\s+tarjeta|tarjeta\s+cmr/i.test(clean)) return false;
 
   return (
-    /^(?:traspaso\s+de|transferencia\s+de|tef\s+de|abono|deposito|reembolso|devolucion|reversa|nota\s+de\s+credito|sueldo|remuneracion|honorarios|aguinaldo|rescate\b)/i.test(
+    /^(?:traspaso\s+de|transferencia\s+de|tef\s+de|abono|deposito|reembolso|devolucion|reversa|nota\s+de\s+credito|sueldo|remuneracion|honorarios|aguinaldo|rescate\b|ajuste\s+compra)/i.test(
       clean
     ) ||
     /\b(?:reembolso\s+(?:isapre|medico|seguro|colegio|fonasa|gasto)|pago\s+de\s+sueldo|abono\s+en\s+cuenta|abono\s+remuneracion|devolucion\s+de\s+prestamo|prestamo\s+recibido)/i.test(
@@ -402,10 +427,10 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
     .filter(Boolean);
 
   const isBancoDeChileFormat = lines.some(
-    (l) => /;CENTRAL;|;PAGO:|;TRASPASO|BANCO DE CHILE|CUENTA FAN|CTA\.?\s*CORRIENTE|CARGOS?;ABONOS?/i.test(l)
+    (l) => /;CENTRAL;|;PAGO:|;TRASPASO|BANCO DE CHILE|CUENTA FAN|CTA\.?\s*CORRIENTE|CARGOS?\s*(?:\(CLP\))?[;,]|ABONOS?\s*(?:\(CLP\))?[;,]/i.test(l)
   );
-  const isCtaCteHeader = lines.some((l) => /CTA\.?\s*CORRIENTE|CUENTA\s+CORRIENTE/i.test(l));
-  const effectiveDefaultMethod =
+  const isCtaCteHeader = lines.some((l) => /CTA\.?\s*CORRIENTE|CUENTA\s+CORRIENTE|00-138-06824-00|001380682400/i.test(l));
+  let currentBlockMethod =
     isBancoDeChileFormat && defaultPaymentMethod === 'cmr_falabella'
       ? isCtaCteHeader
         ? 'bch_ctacte'
@@ -419,6 +444,15 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
+    // Detectar cambio de cuenta si el usuario pegó o subió múltiples cartolas juntas
+    if (/00-138-06824-00|001380682400/i.test(line) && /cuenta/i.test(line)) {
+      currentBlockMethod = 'bch_ctacte';
+    } else if (/00-000-44220-49|000004422049/i.test(line) && /cuenta/i.test(line)) {
+      currentBlockMethod = 'bch_vista';
+    } else if (/titular\/adicional|valor\s+cuota/i.test(line)) {
+      currentBlockMethod = 'cmr_falabella';
+    }
+
     let parts = line.includes(';')
       ? line.split(';')
       : line.includes('\t')
@@ -427,7 +461,7 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
 
     parts = parts.map((p) => p.trim());
 
-    // Detectar fila de cabecera para mapear columnas de Cargo, Abono, Monto y Saldo con precisión
+    // Detectar fila de cabecera para mapear columnas de Cargo, Abono, Monto, Cuotas Pendientes, Valor Cuota y Saldo con precisión
     const lowerParts = parts.map((p) => stripAccents(p.toLowerCase()));
     if (
       lowerParts.some((p) => p === 'fecha' || p.startsWith('fecha ')) &&
@@ -436,13 +470,18 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
       headerMap = {
         dateIdx: lowerParts.findIndex((p) => p === 'fecha' || p.startsWith('fecha ')),
         descIdx: lowerParts.findIndex((p) => /descripcion|movimiento|detalle|glosa/.test(p)),
-        cargoIdx: lowerParts.findIndex((p) => /^cargos?$|^debito$|^giros?$/.test(p)),
-        abonoIdx: lowerParts.findIndex((p) => /^abonos?$|^credito$|^depositos?$/.test(p)),
-        montoIdx: lowerParts.findIndex((p) => /^monto|^valor|^importe|^total/.test(p)),
+        cargoIdx: lowerParts.findIndex((p) => /^(?:cargos?|debito|giros?)(?:\s|\(|$)/.test(p)),
+        abonoIdx: lowerParts.findIndex((p) => /^(?:abonos?|credito|depositos?)(?:\s|\(|$)/.test(p)),
+        montoIdx: lowerParts.findIndex((p) => /^(?:monto|importe|total)(?:\s|\(|$)|^valor(?!\s*cuota)/.test(p)),
+        valorCuotaIdx: lowerParts.findIndex((p) => /^valor\s*cuota/.test(p)),
+        cuotasPendientesIdx: lowerParts.findIndex((p) => /cuotas?\s*pendientes?/.test(p)),
         saldoIdx: lowerParts.findIndex((p) => /^saldo/.test(p)),
         origenIdx: lowerParts.findIndex((p) => /origen|cuenta|medio|tarjeta|canal|sucursal/.test(p)),
-        cuotaIdx: lowerParts.findIndex((p) => /cuota/.test(p))
+        cuotaIdx: lowerParts.findIndex((p) => /cuota/.test(p) && !/valor\s*cuota|cuotas?\s*pendientes?/.test(p))
       };
+      if (headerMap.valorCuotaIdx >= 0) {
+        currentBlockMethod = 'cmr_falabella';
+      }
       continue;
     }
 
@@ -480,7 +519,7 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
             flow,
             fingerprint,
             occurrenceIndex,
-            paymentMethod: effectiveDefaultMethod,
+            paymentMethod: currentBlockMethod,
             sourceLabel: 'Cartola'
           });
         }
@@ -498,6 +537,7 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
     let amount = 0;
     let flow = isIncomingByPrefix ? 'in' : 'out';
     let sourceLabel = '';
+    let pendingInstallmentsCount = 0;
 
     // Si existe mapa de cabeceras con columnas explícitas Cargo / Abono
     if (headerMap && (headerMap.cargoIdx >= 0 || headerMap.abonoIdx >= 0)) {
@@ -516,10 +556,25 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
       if (headerMap.origenIdx >= 0 && parts[headerMap.origenIdx]) {
         sourceLabel = parts[headerMap.origenIdx];
       }
-    } else if (headerMap && headerMap.montoIdx >= 0) {
-      const rawCell = String(parts[headerMap.montoIdx] || '').trim();
-      amount = cleanChileanAmount(rawCell);
-      if (headerMap.cuotaIdx >= 0 && isInstallmentSpec(parts[headerMap.cuotaIdx])) {
+    } else if (headerMap && (headerMap.montoIdx >= 0 || headerMap.valorCuotaIdx >= 0)) {
+      const rawMontoCell = headerMap.montoIdx >= 0 ? String(parts[headerMap.montoIdx] || '').trim() : '';
+      const rawValorCuotaCell = headerMap.valorCuotaIdx >= 0 ? String(parts[headerMap.valorCuotaIdx] || '').trim() : '';
+      const rawCuotasPend = headerMap.cuotasPendientesIdx >= 0 ? parseInt(String(parts[headerMap.cuotasPendientesIdx] || '0').trim(), 10) : 0;
+      pendingInstallmentsCount = Number.isFinite(rawCuotasPend) && rawCuotasPend > 0 ? rawCuotasPend : 0;
+
+      const montoAmt = cleanChileanAmount(rawMontoCell);
+      const valorCuotaAmt = cleanChileanAmount(rawValorCuotaCell);
+
+      // En CMR Falabella: si hay VALOR CUOTA (> 0) y CUOTAS PENDIENTES > 0, el cobro del mes es VALOR CUOTA (no el monto histórico total)
+      if (valorCuotaAmt > 0 && (pendingInstallmentsCount > 0 || montoAmt === 0)) {
+        amount = valorCuotaAmt;
+      } else {
+        amount = montoAmt > 0 ? montoAmt : valorCuotaAmt;
+      }
+
+      if (pendingInstallmentsCount > 0 && !/cuota/i.test(rawDescription)) {
+        rawDescription = `${rawDescription} (${pendingInstallmentsCount} cuota${pendingInstallmentsCount === 1 ? '' : 's'} pend.)`;
+      } else if (headerMap.cuotaIdx >= 0 && isInstallmentSpec(parts[headerMap.cuotaIdx])) {
         rawDescription = `${rawDescription} CUOTA ${parts[headerMap.cuotaIdx]}`;
       }
       if (headerMap.origenIdx >= 0 && parts[headerMap.origenIdx]) {
@@ -588,6 +643,9 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
       intraStatementFpCounts[baseFp] = (intraStatementFpCounts[baseFp] || 0) + 1;
       const occurrenceIndex = intraStatementFpCounts[baseFp];
       const fingerprint = occurrenceIndex > 1 ? `${baseFp}_occ${occurrenceIndex}` : baseFp;
+      const resolvedPm = sourceLabel
+        ? guessPaymentMethodFromSource(sourceLabel, currentBlockMethod)
+        : currentBlockMethod;
       parsedRows.push({
         rowId: `stmt_${i}_${Date.now()}`,
         date: dateISO,
@@ -598,7 +656,8 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
         flow,
         fingerprint,
         occurrenceIndex,
-        paymentMethod: guessPaymentMethodFromSource(sourceLabel || cleanDesc, effectiveDefaultMethod),
+        pendingInstallmentsCount,
+        paymentMethod: resolvedPm,
         sourceLabel: sourceLabel || 'Cartola'
       });
     }
@@ -791,6 +850,16 @@ function inferSmartContextForIncomingAbono(row, allTransactions, learnedContacts
       abonoCategory: 'savings_withdrawal',
       reimburseCategoryId: 'supermercado',
       smartHint: '⚠️ Retiro desde tus Ahorros / Inversiones → Pre-seleccionado para NO disfrazarlo como ingreso.'
+    };
+  }
+
+  // 6.5. Retiro mensual habitual de Vías SpA (ya contemplado dentro del Ingreso Base de $2.800.000)
+  if (/vias\s+spa/i.test(lower)) {
+    return {
+      abonoAction: 'ignore',
+      abonoCategory: 'base_income_included',
+      reimburseCategoryId: 'supermercado',
+      smartHint: '🏢 Retiro de Utilidades Vías SpA: pre-marcado como "Ignorar" porque ya está en tu Ingreso Base ($2.800.000). Cámbialo a "Ingreso Extra" solo si es un retiro adicional.'
     };
   }
 
@@ -1113,9 +1182,13 @@ export function reconcileStatementRows(
   wifeName = 'Marie',
   allHistoricalTransactions = null,
   learnedContacts = {},
-  fixedTemplates = []
+  fixedTemplates = [],
+  options = {}
 ) {
   if (!Array.isArray(statementRows)) return [];
+
+  const filterActiveYm = options?.activeYearMonth ? String(options.activeYearMonth).slice(0, 7) : null;
+  const onlyActiveMonth = Boolean(options?.onlyActiveMonth && filterActiveYm);
 
   const allTxs =
     Array.isArray(allHistoricalTransactions) && allHistoricalTransactions.length > 0
@@ -1127,6 +1200,7 @@ export function reconcileStatementRows(
   const usedTxIds = new Set();
   const usedGroupIds = new Set();
   const claimedFixedTemplateMonthKeys = new Set();
+  const claimedCmrPayments = [];
   const intraBatchBaseFpCounts = {};
 
   // Agrupar compras divididas explícitas (soportando tanto `receiptGroupId` como `splitGroupId`)
@@ -1151,6 +1225,8 @@ export function reconcileStatementRows(
     const flow = rawRow.flow || (isIncomingStatementDescription(rawRow.description) ? 'in' : 'out');
     const amount = cleanChileanAmount(rawRow.amount);
     const date = isValidStatementDate(rawRow.date) ? normalizeDateToISO(rawRow.date) : rawRow.date;
+    const rowYearMonth = String(date || '').slice(0, 7);
+    const isPreviousMonth = Boolean(filterActiveYm && rowYearMonth && rowYearMonth < filterActiveYm);
     const baseFp = buildBankFingerprint(date, amount, rawRow.description, flow);
     intraBatchBaseFpCounts[baseFp] = (intraBatchBaseFpCounts[baseFp] || 0) + 1;
     const occurrenceIndex = Number(rawRow.occurrenceIndex || intraBatchBaseFpCounts[baseFp] || 1);
@@ -1174,6 +1250,8 @@ export function reconcileStatementRows(
     const row = {
       ...rawRow,
       date,
+      rowYearMonth,
+      isPreviousMonth,
       amount,
       flow,
       fingerprint,
@@ -1245,6 +1323,7 @@ export function reconcileStatementRows(
       }
 
       const smartIn = inferSmartContextForIncomingAbono(row, allTxs, learnedContacts);
+      const shouldSelectIn = smartIn.abonoAction !== 'ignore' && !(onlyActiveMonth && isPreviousMonth);
       return {
         ...row,
         status: 'incoming_abono',
@@ -1255,7 +1334,7 @@ export function reconcileStatementRows(
         suggestedCategoryId: smartIn.reimburseCategoryId,
         smartHint: smartIn.smartHint,
         matchedTx: null,
-        selectedToImport: true
+        selectedToImport: shouldSelectIn
       };
     }
 
@@ -1263,6 +1342,25 @@ export function reconcileStatementRows(
     // RAMA B: SALIDAS DE DINERO / CARGOS (flow === 'out')
     // ========================================================================
     if (internalType) {
+      if (internalType === 'cmr_payment') {
+        const duplicateInBatch = claimedCmrPayments.find(
+          (p) => Math.abs(p.amount - row.amount) <= 1000 && daysBetweenISO(p.date, row.date) <= 5
+        );
+        if (duplicateInBatch) {
+          return {
+            ...row,
+            status: 'matched_duplicate',
+            reconciliationStatus: 'already_registered',
+            matchedTx: null,
+            matchedTransactions: [],
+            matchReason: `Pago CMR ya incluido en la otra cartola (${duplicateInBatch.date}) — Evita duplicar entre Banco de Chile y CMR`,
+            suggestedCategoryId: 'pago_tarjeta',
+            selectedToImport: false
+          };
+        }
+        claimedCmrPayments.push({ date: row.date, amount: row.amount });
+      }
+
       const matchedInternal = allTxs.find(
         (tx) =>
           !usedTxIds.has(tx.id) &&
@@ -1281,7 +1379,7 @@ export function reconcileStatementRows(
         alreadyRecordedInternal: Boolean(matchedInternal),
         matchedTx: matchedInternal || null,
         suggestedCategoryId: guessCategoryFromDescription(row.description),
-        selectedToImport: internalType === 'transfer_wife' && !matchedInternal
+        selectedToImport: internalType === 'transfer_wife' && !matchedInternal && !(onlyActiveMonth && isPreviousMonth)
       };
     }
 
@@ -1445,7 +1543,7 @@ export function reconcileStatementRows(
       suggestedFixedTemplateId,
       suggestedFixedTemplateName,
       smartHint,
-      selectedToImport: true
+      selectedToImport: !(onlyActiveMonth && isPreviousMonth)
     };
   });
 }

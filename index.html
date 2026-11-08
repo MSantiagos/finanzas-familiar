@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-title" content="Finanzas Familiar" />
   <title>Finanzas Familiar — Presupuesto, Escudo CMR y Conciliador</title>
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=17" />
+  <link rel="stylesheet" href="./styles.css?v=18" />
   <!-- Librería SheetJS para exportar e importar archivos Microsoft Excel (.xlsx) reales -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
 </head>
@@ -17,7 +17,7 @@
   <div id="app-root"></div>
   <div id="toast-container"></div>
 
-  <script type="module" src="./src/app.js?v=17"></script>
+  <script type="module" src="./src/app.js?v=18"></script>
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', async () => {
@@ -27,7 +27,7 @@
             await reg.update();
           }
           if (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
-            navigator.serviceWorker.register('./sw.js?v=17').catch(() => {});
+            navigator.serviceWorker.register('./sw.js?v=18').catch(() => {});
           }
         } catch (e) {}
       });

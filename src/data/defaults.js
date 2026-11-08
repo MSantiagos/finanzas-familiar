@@ -270,7 +270,9 @@ export const CHILE_MERCHANT_RULES = [
       'carniceria', 'carnicería', 'pescaderia', 'pescadería', 'marisqueria', 'verduleria', 'verdulería', 'fruteria', 'frutería',
       'feria libre', 'vega central', 'la vega', 'lo valledor', 'feria', 'distribuidora',
       'panaderia', 'panadería', 'pasteleria', 'pastelería', 'amasanderia', 'amasandería', 'rosetta', 'lo saldes',
-      'minimarket', 'mini market', 'tienda ruki', 'ruki', 'market', 'supermercado', 'almacen', 'almacén', 'abarrotes', 'tostaduria'
+      'minimarket', 'mini market', 'tienda ruki', 'ruki', 'supermercado mirasol', 'mirasol', 'minimarket lilibe', 'lilibe',
+      'comercialmarb', 'comercial vida gr', 'servicios y comercial', 'sba el quisco', 'vuelta', 'amawa',
+      'donde la tutito', 'donde la anlle', 'market', 'supermercado', 'almacen', 'almacén', 'abarrotes', 'tostaduria'
     ]
   },
   {
@@ -282,10 +284,11 @@ export const CHILE_MERCHANT_RULES = [
       'mcdonalds', "mcdonald's", 'mc donalds', 'arcos dorados', 'burger king', 'wendys', "wendy's", 'kfc', 'kentucky fried',
       'tarragona', 'doggis', 'juan maestro', 'tommy beans', 'mamut', 'pedro juan y diego', "carl's jr", 'carls jr', 'subway', 'streat burger',
       'papa johns', "papa john's", 'papajohns', 'melt pizzas', 'melt pizza', 'melt', 'dominos pizza', "domino's pizza", 'dominos',
-      'little caesars', 'under pizza', 'underpizza', 'telepizza', 'pizza hut', 'sbarro',
+      'little caesars', 'under pizza', 'underpizza', 'under matta', 'telepizza', 'pizza hut', 'sbarro',
       'niu sushi', 'niusushi', 'sushi blues', 'sushiblues', 'kensho', 'sushi house', 'kami sushi', 'sushi', 'nikkei', 'ramen',
       'pf changs', 'p.f. changs', 'chilis', "chili's", 'tgi fridays', 'fridays', 'applebees',
       'bar liguria', 'liguria', 'krossbar', 'kross bar', 'fuente alemana', 'fuente chilena', 'elkika', 'antigua fuente', 'dominó', 'domino',
+      'fudo *costabrava', 'costabrava', 'fudo *kila', 'kila coff', 'restaurante san luis',
       'ticketmaster', 'puntoticket', 'punto ticket', 'passline', 'ticketplus', 'cinehoyts', 'cine hoyts', 'cinepolis', 'cinépolis', 'cinemark',
       'restaurante', 'restobar', 'cafeteria', 'cafetería', 'cafe', 'café', 'cerveceria', 'bar'
     ]
@@ -298,9 +301,9 @@ export const CHILE_MERCHANT_RULES = [
       'autopista central', 'costanera norte', 'vespucio norte', 'vespucio sur', 'vespucio oriente', 'vespucio', 'autopase',
       'tag total', 'servipag tag', 'pago tag', 'cobro tag', 'telepeaje', 'tag',
       'ruta del maipo', 'rutas del pacifico', 'rutas del pacífico', 'ruta 68', 'ruta 78', 'autopista del sol', 'autopista', 'peaje',
-      'metro de santiago', 'metro santiago', 'metro', 'carga bip', 'tarjeta bip', 'bip!', 'bip', 'red movilidad', 'pasaje qr',
+      'metro de santiago', 'metro santiago', 'metro gruta', 'metro', 'carga bip', 'tarjeta bip', 'bip!', 'bip', 'red movilidad', 'pasaje qr',
       'efe trenes', 'efe central', 'efe valparaiso', 'efe sur', 'biotren', 'merval', 'turbus', 'tur bus', 'pullman bus', 'condor bus', 'eme bus',
-      'cabify', 'uber trip', 'ubertrip', 'uber', 'didi', 'indrive', 'in drive', 'whoosh', 'lime',
+      'cabify', 'uber trip', 'ubertrip', 'uber rides', 'uber', 'didi', 'indrive', 'in drive', 'whoosh', 'lime',
       'saba estacionamientos', 'estacionamiento saba', 'saba', 'wesmartpark', 'estacionamiento', 'parking', 'parquimetro', 'parquímetro',
       'revision tecnica', 'revisión técnica', 'prt', 'planta revision', 'permiso de circulacion', 'permiso circulacion', 'soap',
       'lavamax', 'autolavado', 'autoplanet', 'zs motor', 'zsmotor', 'leon servicio', 'neumaticos', 'neumáticos', 'lubricentro', 'vulcanizacion'
@@ -310,7 +313,7 @@ export const CHILE_MERCHANT_RULES = [
     categoryId: 'gatos_mascotas',
     keywords: [
       'superzoo', 'pet happy', 'pethappy', 'braloy', 'laika', 'dr pet', 'dr. pet', 'tus mascotas', 'amigales', 'pichichus', 'club de perros y gatos',
-      'veterinaria', 'clinica veterinaria', 'clínica veterinaria', 'hospital veterinario', 'consulta veterinaria',
+      'inmevet', 'veterinaria', 'clinica veterinaria', 'clínica veterinaria', 'hospital veterinario', 'consulta veterinaria',
       'royal canin', 'pro plan', 'proplan', 'purina', 'hills', "hill's", 'acana', 'orijen', 'nutragold', 'taste of the wild', 'bravery', 'fit formula', 'fit fórmula', 'nomade', 'nómade',
       'master cat', 'mastercat', 'cat chow', 'catchow', 'whiskas', 'felix', 'fancy feast', 'sheba', 'churu', 'inaba', 'wanpy',
       'arena sanitaria', 'arena gato', 'arena gatos', 'arena aglutinante', 'odour buster', 'america litter', 'easy clean', 'sanicat', 'cat it', 'catit',
@@ -337,6 +340,7 @@ export const CHILE_MERCHANT_RULES = [
       'movistar', 'entel', 'wom', 'vtr', 'claro', 'mundo pacifico', 'mundo pacífico', 'gtd manquehue', 'gtd', 'telsur', 'starlink',
       'comunidadfeliz', 'comunidad feliz', 'edifito', 'kastor', 'gasto comun', 'gasto común', 'gastos comunes', 'condominio',
       'arriendo', 'dividendo', 'credito hipotecario', 'contribuciones', 'tesoreria general', 'tesorería general', 'tgr',
+      'recaudacion y pagos de servicios', 'khipu clbs', 'augustar', 'metlife', 'seguro salud oncologico', 'seguro accidentes', 'seguro proteccion', 'seg vida', 'seguro de vida',
       'sencillito', 'servipag cuentas', 'servipag', 'unired', 'verisure', 'adt', 'prosegur'
     ]
   },
@@ -345,6 +349,7 @@ export const CHILE_MERCHANT_RULES = [
     keywords: [
       'netflix', 'spotify', 'disney+', 'disney plus', 'disney', 'hbo max', 'hbomax', 'max.com', 'amazon prime', 'prime video', 'paramount+', 'paramount plus', 'crunchyroll', 'mubi', 'apple tv', 'tnt sports', 'estadio tnt', 'dazn', 'f1 tv',
       'apple.com/bill', 'apple.com', 'itunes', 'icloud', 'icloud+', 'google one', 'google *', 'google play', 'youtube premium', 'youtube music', 'youtubepremium', 'youtube',
+      'megamedia', 'mega go', 'melimas', 'meli+',
       'chatgpt', 'openai', 'claude', 'anthropic', 'midjourney', 'cursor', 'copilot', 'github', 'perplexity',
       'microsoft 365', 'office 365', 'onedrive', 'dropbox', 'adobe', 'canva', 'notion', 'zoom', 'duolingo', 'strava',
       'playstation', 'psn', 'playstation network', 'xbox', 'game pass', 'gamepass', 'steam', 'steampowered', 'nintendo', 'epic games', 'riot games', 'roblox', 'patreon', 'twitch'
