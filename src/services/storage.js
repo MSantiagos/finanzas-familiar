@@ -352,10 +352,19 @@ export function mergeFamilyStates(stateA, stateB) {
     }
   }
 
-  // 5. Unir plantillas de gastos fijos por ID y ordenar de forma determinista
+  // 5. Unir plantillas de gastos fijos por ID respetando deletedFixedTemplateIds y ordenar de forma determinista
+  const deletedFixedTemplateIds = { ...(stateA.deletedFixedTemplateIds || {}) };
+  for (const [fId, delTs] of Object.entries(stateB.deletedFixedTemplateIds || {})) {
+    const prevTs = String(deletedFixedTemplateIds[fId] || '');
+    if (!prevTs || String(delTs) >= prevTs) {
+      deletedFixedTemplateIds[fId] = delTs;
+    }
+  }
+
   const tplMap = new Map();
   for (const tpl of [...(stateA.fixedTemplates || []), ...(stateB.fixedTemplates || [])]) {
     if (!tpl || !tpl.id) continue;
+    if (deletedFixedTemplateIds[tpl.id]) continue;
     const normalizedTpl =
       tpl.id === 'fix_suscripciones' && tpl.categoryId === 'gustos_personales'
         ? { ...tpl, categoryId: 'suscripciones' }
@@ -510,6 +519,7 @@ export function mergeFamilyStates(stateA, stateB) {
       categories: stateB.categories || stateA.categories || DEFAULT_CATEGORIES,
       monthlyBudgets,
       fixedTemplates: mergedTemplates,
+      deletedFixedTemplateIds,
       annualSubscriptions: mergedAnnualSubscriptions,
       deletedAnnualSubscriptionIds,
       transactions: mergedTransactions,

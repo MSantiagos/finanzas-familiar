@@ -1313,13 +1313,24 @@ export function matchFixedTemplateFromStatementRow(row, fixedTemplates = []) {
     fix_luz: ['enel', 'cge', 'chilquinta', 'saesa', 'frontel', 'codiner', 'cuenta luz', 'electricidad'],
     fix_agua: ['aguas andinas', 'aguas cordillera', 'aguas manantiales', 'esval', 'essbio', 'essal', 'nuevosur', 'aguas del valle', 'sacyr agua', 'cuenta agua'],
     fix_gas: ['metrogas', 'lipigas', 'abastible', 'gasco', 'gas sur', 'intergas', 'cuenta gas'],
-    fix_internet: ['movistar', 'entel', 'wom', 'vtr', 'claro', 'gtd', 'telsur', 'mundo pacifico', 'mundo telecom', 'starlink', 'internet hogar', 'fibra optica']
+    fix_internet: ['movistar', 'entel', 'wom', 'vtr', 'claro', 'gtd', 'telsur', 'mundo pacifico', 'mundo telecom', 'starlink', 'internet hogar', 'fibra optica'],
+    fix_pac_augustar: ['augustar seguros', 'augusta seguros'],
+    fix_pac_metlife_1: ['metlife chile seguros', 'pac metlife'],
+    fix_pac_metlife_2: ['metlife chile seguros', 'pac metlife'],
+    fix_khipu_servicios: ['khipu clbs']
   };
 
   for (const tpl of fixedTemplates) {
     if (!tpl || !tpl.id) continue;
     const ruleKws = templateRuleKeywords[tpl.id] || [];
     if (ruleKws.some((kw) => matchKeywordInText(lower, kw))) {
+      // Si hay dos PACs de la misma aseguradora (ej. MetLife $42.279 y MetLife $9.598), distinguir por cercanía de monto
+      if (tpl.id === 'fix_pac_metlife_1' || tpl.id === 'fix_pac_metlife_2') {
+        const est = Number(tpl.estimatedAmount || 0);
+        if (est > 0 && Math.abs(Number(row.amount || 0) - est) > Math.max(8000, est * 0.35)) {
+          continue;
+        }
+      }
       return tpl;
     }
     const cleanTplName = stripAccents(String(tpl.name || '').toLowerCase())

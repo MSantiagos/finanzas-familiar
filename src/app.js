@@ -1,7 +1,7 @@
 import {
   PAYMENT_METHODS,
   SAMPLE_BANK_STATEMENT_TEXT
-} from './data/defaults.js?v=22';
+} from './data/defaults.js?v=23';
 import {
   loadState,
   saveState,
@@ -17,7 +17,7 @@ import {
   setupAutoOnlineSync,
   exportStateToJsonString,
   importStateFromJsonString
-} from './services/storage.js?v=22';
+} from './services/storage.js?v=23';
 import {
   parseBankStatementText,
   reconcileStatementRows,
@@ -27,19 +27,19 @@ import {
   formatLiveCLPInput,
   normalizeContactKey,
   extractContactDisplayName
-} from './services/reconciler.js?v=22';
+} from './services/reconciler.js?v=23';
 import {
   scanReceiptWithGemini,
   classifyStatementRowsWithGemini,
   getDemoScannedReceipt,
   generateMonthlyFamilyAuditWithGemini
-} from './services/geminiScanner.js?v=22';
-import { exportStateToExcel } from './services/excelExport.js?v=22';
+} from './services/geminiScanner.js?v=23';
+import { exportStateToExcel } from './services/excelExport.js?v=23';
 import {
   parseQuickNaturalExpense,
   buildInstallmentTransactions,
   getQuickPresetsForAuthor
-} from './services/smartInput.js?v=22';
+} from './services/smartInput.js?v=23';
 import {
   resolveTxBudgetMonth,
   calculateMonthlyFinancialSummary,
@@ -56,7 +56,7 @@ import {
   getAnnualSubscriptionsForMonth,
   applyDynamicAnnualSubscriptionsToMonthBudget,
   buildCoupleWhatsAppMessages
-} from './domain/financialEngine.js?v=22';
+} from './domain/financialEngine.js?v=23';
 
 // Estado global en memoria de la aplicación
 let appState = loadState();
@@ -156,6 +156,7 @@ let isAddingPatrimonyItem = false;
 let editingPatrimonyId = null;
 let isAddingAnnualSub = false;
 let editingAnnualSubId = null;
+let editingFixedTplId = null;
 
 // Estado del formulario de Ingresos Extras (por defecto: Ahorro Blindado, o diversificación % Presupuesto / Ahorro)
 let extraIncomeForm = {
@@ -264,7 +265,8 @@ function isUserTyping() {
     isAddingAnnualSub ||
     editingAnnualSubId ||
     isAddingPatrimonyItem ||
-    editingPatrimonyId
+    editingPatrimonyId ||
+    editingFixedTplId
   ) {
     return true;
   }
@@ -2737,10 +2739,90 @@ function renderBudgetEditorForm(metrics) {
 }
 
 // ============================================================================
-// PESTAÑA 3: PLANTILLA DE GASTOS FIJOS DEL MES (1 CLIC)
+// PESTAÑA 3: PLANTILLA DE GASTOS FIJOS DEL MES (1 CLIC) + SINCRONIZACIÓN CON PRESUPUESTO
 // ============================================================================
+function syncFixedTemplatesToViviendaBudget(ym = activeYearMonth) {
+  ensureMonthBudget(appState, ym);
+  const monthCfg = appState.monthlyBudgets?.[ym];
+  if (!monthCfg) return 0;
+
+  const templates = appState.fixedTemplates || [];
+  const viviendaSum = templates
+    .filter((t) => (t.categoryId || 'vivienda_fijos') === 'vivienda_fijos')
+    .reduce((acc, t) => acc + Math.max(0, Math.round(Number(t.estimatedAmount || 0))), 0);
+
+  if (!monthCfg.categories) monthCfg.categories = {};
+  if (!monthCfg.lockedCategories || typeof monthCfg.lockedCategories !== 'object') {
+    monthCfg.lockedCategories = {};
+  }
+
+  const nowISO = new Date().toISOString();
+  monthCfg.categories.vivienda_fijos = viviendaSum;
+  monthCfg.lockedCategories.vivienda_fijos = true;
+  monthCfg.lockedCategoriesUpdatedAt = nowISO;
+
+  // Repartir el resto del ingreso disponible proporcionalmente entre los presupuestos no fijos (🔓)
+  const categories = (appState.categories || []).filter(
+    (c) => c.id !== 'suscripciones_anuales' && !c.isDynamicAnnual
+  );
+  const lockedIds = Object.keys(monthCfg.lockedCategories).filter(
+    (cid) => Boolean(monthCfg.lockedCategories[cid])
+  );
+  const annualDue = Math.round(Number(monthCfg.categories.suscripciones_anuales || 0));
+  const effectiveIncomeTarget = Math.max(0, Math.round(Number(monthCfg.incomeTarget || 2350000)) - annualDue);
+
+  const dist = distributeBudgetProportionally({
+    incomeTarget: effectiveIncomeTarget,
+    savingsGoal: monthCfg.savingsGoal || 250000,
+    categories,
+    currentAmounts: monthCfg.categories,
+    mode: 'current',
+    lockedCategoryIds: lockedIds
+  });
+
+  monthCfg.categories = {
+    ...dist.allocations,
+    vivienda_fijos: viviendaSum,
+    ...(annualDue > 0 ? { suscripciones_anuales: annualDue } : {})
+  };
+  monthCfg.updatedAt = nowISO;
+  return viviendaSum;
+}
+
 function renderFixedTab(metrics) {
   const templates = appState.fixedTemplates || [];
+  const categories = (appState.categories || []).filter(
+    (c) => c.id !== 'suscripciones_anuales' && !c.isDynamicAnnual
+  );
+  const monthCfg = appState.monthlyBudgets?.[activeYearMonth] || {};
+  const currentViviendaBudget = Math.round(Number(monthCfg.categories?.vivienda_fijos || 0));
+  const isViviendaLocked = Boolean(monthCfg.lockedCategories?.vivienda_fijos);
+
+  const viviendaTemplatesSum = templates
+    .filter((t) => (t.categoryId || 'vivienda_fijos') === 'vivienda_fijos')
+    .reduce((acc, t) => acc + Math.max(0, Math.round(Number(t.estimatedAmount || 0))), 0);
+  const totalTemplatesSum = templates.reduce(
+    (acc, t) => acc + Math.max(0, Math.round(Number(t.estimatedAmount || 0))),
+    0
+  );
+
+  let paidCount = 0;
+  let paidSum = 0;
+  let pendingSum = 0;
+  templates.forEach((tpl) => {
+    const paidTx = metrics.txs.find((t) => t.fixedTemplateId === tpl.id);
+    if (paidTx) {
+      paidCount++;
+      paidSum += Math.round(Number(paidTx.amount || 0));
+    } else {
+      pendingSum += Math.round(Number(tpl.estimatedAmount || 0));
+    }
+  });
+
+  const isSyncedWithBudget = currentViviendaBudget === viviendaTemplatesSum && isViviendaLocked;
+  const hasDetectedBchPacs = templates.some((t) =>
+    ['fix_pac_augustar', 'fix_pac_metlife_1', 'fix_pac_metlife_2', 'fix_khipu_servicios'].includes(t.id)
+  );
 
   return `
     <section class="card-panel">
@@ -2748,37 +2830,125 @@ function renderFixedTab(metrics) {
         <div>
           <h2 class="section-title">🏠 Gastos Fijos de ${getMonthNameLabel(activeYearMonth)}</h2>
           <p class="section-subtitle">
-            Confirma con 1 toque las cuentas del mes (Arriendo, GGCC, Luz, Agua, Gas, Internet). Jamás se olvidan ni se duplican.
+            Tu desglose real de cuentas fijas y PAC bancarios. Edita o borra cualquier ítem y sincroniza la suma directo con tu presupuesto fijo (📌).
           </p>
         </div>
+        ${!hasDetectedBchPacs ? `
+          <button type="button" class="btn-secondary-sm" data-action="add-detected-bch-pacs" title="Agrega tus cargos PAC detectados en Banco de Chile (Augustar Seguros, MetLife y Khipu)">
+            ⚡ Agregar mis PAC Banco de Chile detectados
+          </button>
+        ` : ''}
+      </div>
+
+      <!-- Banner de Conexión Directa entre 🏠 Fijos y 📊 Presupuestos -->
+      <div style="margin-bottom:16px;padding:14px 16px;border-radius:12px;background:${isSyncedWithBudget ? 'rgba(16,185,129,0.09)' : 'rgba(59,130,246,0.09)'};border:1px solid ${isSyncedWithBudget ? 'rgba(16,185,129,0.3)' : 'rgba(59,130,246,0.3)'};display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <strong>📊 Conexión con tu Presupuesto «🏠 Vivienda y Cuentas Fijas»:</strong>
+            <span style="font-size:0.78rem;padding:2px 8px;border-radius:999px;font-weight:700;background:${isSyncedWithBudget ? 'rgba(16,185,129,0.18)' : 'rgba(245,158,11,0.18)'};">
+              ${isSyncedWithBudget ? '✅ 100% Sincronizado y Fijo (📌)' : `⚠️ Diferencia de ${formatCLP(Math.abs(currentViviendaBudget - viviendaTemplatesSum))}`}
+            </span>
+          </div>
+          <span style="font-size:0.83rem;color:var(--text-secondary);">
+            Suma Cuentas de Vivienda/Fijos aquí: <strong>${formatCLP(viviendaTemplatesSum)}</strong>
+            ${totalTemplatesSum !== viviendaTemplatesSum ? `(Total plantilla: ${formatCLP(totalTemplatesSum)})` : ''}
+            · Presupuesto actual en Vivienda: <strong>${formatCLP(currentViviendaBudget)} ${isViviendaLocked ? '📌' : '🔓'}</strong>
+            · Pagadas este mes: <strong>${paidCount}/${templates.length} (${formatCLP(paidSum)})</strong> · Pendientes: <strong>${formatCLP(pendingSum)}</strong>
+          </span>
+        </div>
+        <button
+          type="button"
+          class="${isSyncedWithBudget ? 'btn-secondary-sm' : 'btn-confirm-fixed'}"
+          data-action="sync-fixed-to-vivienda-budget"
+          style="white-space:nowrap;"
+        >
+          📌 Igualar y Fijar Presupuesto Vivienda en ${formatCLP(viviendaTemplatesSum)}
+        </button>
       </div>
 
       <div class="fixed-checklist">
         ${templates.map((tpl) => {
           const paidTx = metrics.txs.find((t) => t.fixedTemplateId === tpl.id);
+          const isEditingThis = editingFixedTplId === tpl.id;
+          const catObj = categories.find((c) => c.id === (tpl.categoryId || 'vivienda_fijos'));
+          const catBadge = catObj ? `${catObj.icon} ${catObj.name}` : '🏠 Vivienda y Cuentas Fijas';
+
+          if (isEditingThis) {
+            return `
+              <div class="fixed-row" style="flex-direction:column;align-items:stretch;gap:10px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.3);">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <strong>✏️ Editando Gasto Fijo: ${escapeHtml(tpl.name)}</strong>
+                  <button type="button" class="chip-btn" data-action="cancel-fixed-tpl-edit">Cancelar</button>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;">
+                  <label style="display:flex;flex-direction:column;gap:3px;font-size:0.75rem;">
+                    <span>Nombre de la cuenta:</span>
+                    <input type="text" id="edit-fix-name-${tpl.id}" class="text-input" value="${escapeHtml(tpl.name)}" />
+                  </label>
+                  <label style="display:flex;flex-direction:column;gap:3px;font-size:0.75rem;">
+                    <span>Monto mensual estimado (CLP):</span>
+                    <input type="text" inputmode="numeric" id="edit-fix-amt-${tpl.id}" class="text-input live-clp-input" value="${formatLiveCLPInput(tpl.estimatedAmount)}" />
+                  </label>
+                  <label style="display:flex;flex-direction:column;gap:3px;font-size:0.75rem;">
+                    <span>Día aprox. de vencimiento:</span>
+                    <input type="number" min="1" max="31" id="edit-fix-day-${tpl.id}" class="text-input" value="${tpl.dayOfMonth || 5}" />
+                  </label>
+                  <label style="display:flex;flex-direction:column;gap:3px;font-size:0.75rem;">
+                    <span>Categoría de Presupuesto:</span>
+                    <select id="edit-fix-cat-${tpl.id}" class="text-input">
+                      ${categories.map((c) => `
+                        <option value="${c.id}" ${(tpl.categoryId || 'vivienda_fijos') === c.id ? 'selected' : ''}>${c.icon} ${c.name}</option>
+                      `).join('')}
+                    </select>
+                  </label>
+                  <label style="display:flex;flex-direction:column;gap:3px;font-size:0.75rem;">
+                    <span>Medio de pago habitual:</span>
+                    <select id="edit-fix-pm-${tpl.id}" class="text-input">
+                      ${PAYMENT_METHODS.map((pm) => `
+                        <option value="${pm.id}" ${tpl.defaultPaymentMethod === pm.id ? 'selected' : ''}>${pm.icon} ${pm.shortName}</option>
+                      `).join('')}
+                    </select>
+                  </label>
+                </div>
+                <div style="display:flex;justify-content:flex-end;gap:8px;">
+                  <button type="button" class="btn-outline-danger-sm" data-action="delete-fixed-tpl" data-tpl="${tpl.id}">
+                    🗑️ Eliminar de la plantilla
+                  </button>
+                  <button type="button" class="btn-confirm-fixed" data-action="save-fixed-tpl-edit" data-tpl="${tpl.id}">
+                    💾 Guardar y Actualizar Presupuesto
+                  </button>
+                </div>
+              </div>
+            `;
+          }
+
           return `
             <div class="fixed-row ${paidTx ? 'fixed-paid' : 'fixed-pending'}">
               <div class="fixed-info">
                 <div class="fixed-status-icon">${paidTx ? '✅' : '⏳'}</div>
                 <div>
-                  <strong class="fixed-name">${tpl.name}</strong>
+                  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                    <strong class="fixed-name">${escapeHtml(tpl.name)}</strong>
+                    <span style="font-size:0.68rem;padding:1px 6px;border-radius:6px;background:rgba(148,163,184,0.15);color:var(--text-secondary);">${catBadge}</span>
+                  </div>
                   <div class="fixed-meta">
                     <span>Vence día ~${tpl.dayOfMonth || 5}</span>
                     <span>•</span>
-                    <span>Estimado: ${formatCLP(tpl.estimatedAmount)}</span>
+                    <span>Base mensual: <strong>${formatCLP(tpl.estimatedAmount)}</strong></span>
                   </div>
                 </div>
               </div>
 
               ${paidTx ? `
-                <div style="display:flex;align-items:center;gap:10px;">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                   <span style="font-size:0.82rem;">Pagado (${paidTx.date}): <strong>${formatCLP(paidTx.amount)}</strong></span>
+                  <button type="button" class="chip-btn" data-action="edit-fixed-tpl" data-tpl="${tpl.id}" title="Editar cuenta fija">✏️</button>
                   <button type="button" class="btn-outline-danger-sm" data-action="delete-tx" data-id="${paidTx.id}">
-                    Deshacer
+                    Deshacer pago
                   </button>
                 </div>
               ` : `
-                <div class="fixed-confirm-controls">
+                <div class="fixed-confirm-controls" style="flex-wrap:wrap;">
                   <input
                     type="text"
                     inputmode="numeric"
@@ -2797,9 +2967,26 @@ function renderFixedTab(metrics) {
                     class="btn-confirm-fixed"
                     data-action="confirm-fixed-item"
                     data-tpl="${tpl.id}"
+                    title="Registra el pago de este mes y actualiza el monto base"
                   >
                     Confirmar
                   </button>
+                  <button
+                    type="button"
+                    class="chip-btn"
+                    data-action="edit-fixed-tpl"
+                    data-tpl="${tpl.id}"
+                    style="padding:5px 8px;"
+                    title="Editar nombre, monto base o categoría"
+                  >✏️</button>
+                  <button
+                    type="button"
+                    class="chip-btn"
+                    data-action="delete-fixed-tpl"
+                    data-tpl="${tpl.id}"
+                    style="padding:5px 8px;color:var(--danger);"
+                    title="Eliminar este ítem de la plantilla"
+                  >🗑️</button>
                 </div>
               `}
             </div>
@@ -2808,11 +2995,11 @@ function renderFixedTab(metrics) {
       </div>
 
       <form id="add-fixed-template-form" class="add-fixed-form">
-        <h4>➕ Agregar nuevo Gasto Fijo a la Plantilla (ej. Sala Cuna, Seguro)</h4>
+        <h4>➕ Agregar nuevo Gasto Fijo a la Plantilla (ej. Dividendo, Seguro PAC, Sala Cuna)</h4>
         <div class="form-row-three">
-          <input type="text" id="new-fix-name" class="text-input" placeholder="Nombre (ej. Sala Cuna)" required />
+          <input type="text" id="new-fix-name" class="text-input" placeholder="Nombre (ej. PAC MetLife / Sala Cuna)" required />
           <input type="text" inputmode="numeric" id="new-fix-amount" class="text-input live-clp-input" placeholder="Monto estimado CLP" required />
-          <button type="submit" class="btn-secondary">Agregar Fijo</button>
+          <button type="submit" class="btn-secondary">➕ Agregar y Actualizar Presupuesto</button>
         </div>
       </form>
     </section>
@@ -4287,7 +4474,7 @@ function attachDynamicInputListeners() {
     };
   }
 
-  // Agregar plantilla de gasto fijo
+  // Agregar plantilla de gasto fijo y sincronizar presupuesto fijo de Vivienda
   const addFixedForm = document.getElementById('add-fixed-template-form');
   if (addFixedForm) {
     addFixedForm.onsubmit = (e) => {
@@ -4295,6 +4482,7 @@ function attachDynamicInputListeners() {
       const name = document.getElementById('new-fix-name').value.trim();
       const amount = cleanChileanAmount(document.getElementById('new-fix-amount').value);
       if (!name || amount <= 0) return;
+      const nowISO = new Date().toISOString();
 
       appState.fixedTemplates.push({
         id: `fix_${Date.now()}`,
@@ -4302,10 +4490,16 @@ function attachDynamicInputListeners() {
         categoryId: 'vivienda_fijos',
         estimatedAmount: amount,
         defaultPaymentMethod: 'bch_ctacte',
-        dayOfMonth: 10
+        dayOfMonth: 10,
+        createdAt: nowISO,
+        updatedAt: nowISO
       });
+      const newSum = syncFixedTemplatesToViviendaBudget(activeYearMonth);
       saveState(appState);
-      showToast(`🏠 "${name}" agregado a tu plantilla mensual`, 'success');
+      showToast(
+        `🏠 "${name}" (${formatCLP(amount)}) agregado y presupuesto de Vivienda actualizado a ${formatCLP(newSum)} 📌`,
+        'success'
+      );
       renderApp();
     };
   }
@@ -5547,6 +5741,146 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
+  if (action === 'sync-fixed-to-vivienda-budget') {
+    const newSum = syncFixedTemplatesToViviendaBudget(activeYearMonth);
+    saveState(appState);
+    showToast(
+      `📌 Presupuesto de "🏠 Vivienda y Cuentas Fijas" igualado y fijado en ${formatCLP(newSum)} (resto repartido en presupuestos no fijos 🔓)`,
+      'success'
+    );
+    renderApp();
+    return;
+  }
+
+  if (action === 'add-detected-bch-pacs') {
+    const nowISO = new Date().toISOString();
+    if (!Array.isArray(appState.fixedTemplates)) appState.fixedTemplates = [];
+    if (!appState.deletedFixedTemplateIds) appState.deletedFixedTemplateIds = {};
+
+    const detectedPacs = [
+      {
+        id: 'fix_pac_augustar',
+        name: 'PAC Augustar Seguros de Vida',
+        categoryId: 'vivienda_fijos',
+        estimatedAmount: 49825,
+        defaultPaymentMethod: 'bch_ctacte',
+        dayOfMonth: 2
+      },
+      {
+        id: 'fix_pac_metlife_1',
+        name: 'PAC MetLife Seguros de Vida (Póliza Principal)',
+        categoryId: 'vivienda_fijos',
+        estimatedAmount: 42279,
+        defaultPaymentMethod: 'bch_ctacte',
+        dayOfMonth: 2
+      },
+      {
+        id: 'fix_pac_metlife_2',
+        name: 'PAC MetLife Seguros de Vida (Adicional)',
+        categoryId: 'vivienda_fijos',
+        estimatedAmount: 9598,
+        defaultPaymentMethod: 'bch_ctacte',
+        dayOfMonth: 2
+      },
+      {
+        id: 'fix_khipu_servicios',
+        name: 'Khipu / GGCC / Servicios Online',
+        categoryId: 'vivienda_fijos',
+        estimatedAmount: 36261,
+        defaultPaymentMethod: 'bch_vista',
+        dayOfMonth: 4
+      }
+    ];
+
+    let added = 0;
+    detectedPacs.forEach((pac) => {
+      delete appState.deletedFixedTemplateIds[pac.id];
+      const exists = appState.fixedTemplates.find((t) => t.id === pac.id);
+      if (!exists) {
+        appState.fixedTemplates.push({
+          ...pac,
+          createdAt: nowISO,
+          updatedAt: nowISO
+        });
+        added++;
+      }
+    });
+
+    const newSum = syncFixedTemplatesToViviendaBudget(activeYearMonth);
+    saveState(appState);
+    showToast(
+      `⚡ ${added} PAC(s) de Banco de Chile agregados y presupuesto de Vivienda actualizado a ${formatCLP(newSum)} 📌`,
+      'success'
+    );
+    renderApp();
+    return;
+  }
+
+  if (action === 'edit-fixed-tpl') {
+    editingFixedTplId = btn.dataset.tpl || null;
+    renderApp();
+    return;
+  }
+
+  if (action === 'cancel-fixed-tpl-edit') {
+    editingFixedTplId = null;
+    renderApp();
+    return;
+  }
+
+  if (action === 'save-fixed-tpl-edit') {
+    const tplId = btn.dataset.tpl;
+    const tpl = (appState.fixedTemplates || []).find((t) => t.id === tplId);
+    if (!tpl) return;
+    const nameVal = document.getElementById(`edit-fix-name-${tplId}`)?.value?.trim();
+    const amtVal = cleanChileanAmount(document.getElementById(`edit-fix-amt-${tplId}`)?.value);
+    const dayVal = Math.max(1, Math.min(31, Number(document.getElementById(`edit-fix-day-${tplId}`)?.value || 5)));
+    const catVal = document.getElementById(`edit-fix-cat-${tplId}`)?.value || 'vivienda_fijos';
+    const pmVal = document.getElementById(`edit-fix-pm-${tplId}`)?.value || 'bch_ctacte';
+
+    if (!nameVal || amtVal <= 0) {
+      showToast('Ingresa un nombre y monto estimado válido', 'error');
+      return;
+    }
+
+    const nowISO = new Date().toISOString();
+    tpl.name = nameVal;
+    tpl.estimatedAmount = amtVal;
+    tpl.dayOfMonth = dayVal;
+    tpl.categoryId = catVal;
+    tpl.defaultPaymentMethod = pmVal;
+    tpl.updatedAt = nowISO;
+
+    editingFixedTplId = null;
+    const newSum = syncFixedTemplatesToViviendaBudget(activeYearMonth);
+    saveState(appState);
+    showToast(
+      `💾 "${tpl.name}" actualizado (${formatCLP(amtVal)}) y presupuesto de Vivienda sincronizado en ${formatCLP(newSum)} 📌`,
+      'success'
+    );
+    renderApp();
+    return;
+  }
+
+  if (action === 'delete-fixed-tpl') {
+    const tplId = btn.dataset.tpl;
+    if (!tplId) return;
+    const nowISO = new Date().toISOString();
+    if (!appState.deletedFixedTemplateIds) appState.deletedFixedTemplateIds = {};
+    appState.deletedFixedTemplateIds[tplId] = nowISO;
+    appState.fixedTemplates = (appState.fixedTemplates || []).filter((t) => t.id !== tplId);
+    if (editingFixedTplId === tplId) editingFixedTplId = null;
+
+    const newSum = syncFixedTemplatesToViviendaBudget(activeYearMonth);
+    saveState(appState);
+    showToast(
+      `🗑️ Cuenta fija eliminada y presupuesto de Vivienda ajustado a ${formatCLP(newSum)} 📌`,
+      'success'
+    );
+    renderApp();
+    return;
+  }
+
   if (action === 'confirm-fixed-item') {
     const tplId = btn.dataset.tpl;
     const tpl = (appState.fixedTemplates || []).find((t) => t.id === tplId);
@@ -5556,6 +5890,12 @@ document.addEventListener('click', async (e) => {
     const amt = cleanChileanAmount(amtInput ? amtInput.value : tpl.estimatedAmount);
     const pm = pmSelect ? pmSelect.value : tpl.defaultPaymentMethod;
     const nowISO = new Date().toISOString();
+
+    if (amt > 0) {
+      tpl.estimatedAmount = amt;
+      tpl.defaultPaymentMethod = pm;
+      tpl.updatedAt = nowISO;
+    }
 
     appState.transactions.push({
       id: `tx_fix_${Date.now()}`,

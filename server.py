@@ -243,12 +243,20 @@ def merge_family_states(existing, incoming):
                     m_cats[cid] = c_def.get("defaultBudget", 50000)
             m_cfg["categories"] = m_cats
 
-    # 6. Fusionar plantillas de gastos fijos por ID
+    # 6. Fusionar plantillas de gastos fijos por ID (respetando deletedFixedTemplateIds)
+    deleted_fixed = dict(existing.get("deletedFixedTemplateIds") or {})
+    for f_id, del_ts in (incoming.get("deletedFixedTemplateIds") or {}).items():
+        prev_ts = str(deleted_fixed.get(f_id, "") or "")
+        if not prev_ts or str(del_ts) >= prev_ts:
+            deleted_fixed[f_id] = del_ts
+
     tpl_by_id = {}
     for t in (existing.get("fixedTemplates") or []) + (incoming.get("fixedTemplates") or []):
         if not isinstance(t, dict) or not t.get("id"):
             continue
         tid = t["id"]
+        if tid in deleted_fixed:
+            continue
         norm_t = dict(t)
         if tid == "fix_suscripciones" and norm_t.get("categoryId") == "gustos_personales":
             norm_t["categoryId"] = "suscripciones"
@@ -365,6 +373,7 @@ def merge_family_states(existing, incoming):
             "categories": merged_categories,
             "monthlyBudgets": monthly_budgets,
             "fixedTemplates": merged_templates,
+            "deletedFixedTemplateIds": deleted_fixed,
             "annualSubscriptions": merged_annual_subs,
             "deletedAnnualSubscriptionIds": deleted_annual,
             "transactions": merged_txs,
