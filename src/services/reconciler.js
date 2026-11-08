@@ -853,23 +853,54 @@ function inferSmartContextForIncomingAbono(row, allTransactions, learnedContacts
     };
   }
 
-  // 6.5. Retiro mensual habitual de Vías SpA (ya contemplado dentro del Ingreso Base de $2.800.000)
-  if (/vias\s+spa/i.test(lower)) {
+  // 6.5. Sueldo pagado en los últimos días del mes anterior (ej. 29/10 para financiar Noviembre)
+  if (row.isLatePrevMonthSalary) {
     return {
-      abonoAction: 'ignore',
-      abonoCategory: 'base_income_included',
+      abonoAction: 'base_income',
+      abonoCategory: 'base_income',
       reimburseCategoryId: 'supermercado',
-      smartHint: '🏢 Retiro de Utilidades Vías SpA: pre-marcado como "Ignorar" porque ya está en tu Ingreso Base ($2.800.000). Cámbialo a "Ingreso Extra" solo si es un retiro adicional.'
+      extraBudgetPct: 0,
+      extraTarget: 'proportional_unlocked',
+      smartHint: `💼 Sueldo de fin de mes anterior (${row.date}) detectado automáticamente → Se imputa como tu Ingreso Base de ${row.targetBudgetMonth || 'este mes'} (parte de tus $2.800.000).`
     };
   }
 
-  // 7. Sueldo / Remuneración / Honorarios
-  if (/sueldo|remuneracion|honorarios|aguinaldo|gratificacion|tesoreria|sii\b|nomina/i.test(lower)) {
+  // 6.6. Retiro mensual habitual de Vías SpA (forma parte del Ingreso Base de $2.800.000)
+  if (/vias\s+spa/i.test(lower)) {
+    return {
+      abonoAction: 'base_income',
+      abonoCategory: 'base_income',
+      reimburseCategoryId: 'supermercado',
+      extraBudgetPct: 20,
+      extraTarget: 'proportional_unlocked',
+      smartHint: '🏢 Retiro de Utilidades Vías SpA → Se registra dentro de tu Ingreso Base ($2.800.000) sin alterar tu presupuesto. Cámbialo a "💰 Ingreso Extra Adicional" si es un retiro extra.'
+    };
+  }
+
+  // 7. Sueldo / Remuneración del mes en curso
+  if (
+    /sueldo|remuneracion|haberes|nomina/i.test(lower) ||
+    (row.amount >= 900000 && /abono\s+por\s+traspaso\s+internet/i.test(lower))
+  ) {
+    return {
+      abonoAction: 'base_income',
+      abonoCategory: 'base_income',
+      reimburseCategoryId: 'supermercado',
+      extraBudgetPct: 0,
+      extraTarget: 'proportional_unlocked',
+      smartHint: '💼 Sueldo / Remuneración detectada → Se registra dentro de tu Ingreso Base del mes ($2.800.000).'
+    };
+  }
+
+  // 7.5. Honorarios / Aguinaldo / Bono / Devolución SII → Ingreso Extra Adicional (diversificable)
+  if (/honorarios|aguinaldo|gratificacion|tesoreria|sii\b|bono/i.test(lower)) {
     return {
       abonoAction: 'income',
       abonoCategory: 'income',
       reimburseCategoryId: 'supermercado',
-      smartHint: '💰 Sueldo / Remuneración detectada → Suma a tus Ingresos del Mes.'
+      extraBudgetPct: 20,
+      extraTarget: 'proportional_unlocked',
+      smartHint: '💰 Ingreso Extra Adicional detectado → Puedes elegir qué % va a Presupuestos No Fijos (🔓) y qué % a Ahorro Blindado (🛡️).'
     };
   }
 
@@ -888,6 +919,8 @@ function inferSmartContextForIncomingAbono(row, allTransactions, learnedContacts
       abonoAction: 'reimburse',
       abonoCategory: 'reimbursement',
       reimburseCategoryId: recentBigExpense.categoryId,
+      extraBudgetPct: 20,
+      extraTarget: 'proportional_unlocked',
       smartHint: `💡 ¿Cuenta compartida? Hace poco pagaste $${Number(recentBigExpense.amount).toLocaleString('es-CL')} en "${recentBigExpense.note}". Pre-seleccionado como Reembolso.`
     };
   }
@@ -896,7 +929,9 @@ function inferSmartContextForIncomingAbono(row, allTransactions, learnedContacts
     abonoAction: 'income',
     abonoCategory: 'income',
     reimburseCategoryId: 'supermercado',
-    smartHint: '💬 Abono de un tercero: confirma si es Ingreso Extra, Reembolso de cuenta compartida o Préstamo.'
+    extraBudgetPct: 20,
+    extraTarget: 'proportional_unlocked',
+    smartHint: '💬 Abono recibido: confirma si es Ingreso Extra (con % a presupuesto/ahorro), Reembolso o Préstamo.'
   };
 }
 
@@ -1190,6 +1225,12 @@ export function reconcileStatementRows(
   const filterActiveYm = options?.activeYearMonth ? String(options.activeYearMonth).slice(0, 7) : null;
   const onlyActiveMonth = Boolean(options?.onlyActiveMonth && filterActiveYm);
 
+  let prevYearMonth = '';
+  if (filterActiveYm && /^\d{4}-\d{2}$/.test(filterActiveYm)) {
+    const [yNum, mNum] = filterActiveYm.split('-').map(Number);
+    prevYearMonth = mNum === 1 ? `${yNum - 1}-12` : `${yNum}-${String(mNum - 1).padStart(2, '0')}`;
+  }
+
   const allTxs =
     Array.isArray(allHistoricalTransactions) && allHistoricalTransactions.length > 0
       ? allHistoricalTransactions
@@ -1226,7 +1267,26 @@ export function reconcileStatementRows(
     const amount = cleanChileanAmount(rawRow.amount);
     const date = isValidStatementDate(rawRow.date) ? normalizeDateToISO(rawRow.date) : rawRow.date;
     const rowYearMonth = String(date || '').slice(0, 7);
-    const isPreviousMonth = Boolean(filterActiveYm && rowYearMonth && rowYearMonth < filterActiveYm);
+    const dayOfMonth = Number(String(date || '').slice(8, 10) || 0);
+    const internalType = detectInternalOrCardPayment(rawRow.description, wifeName);
+
+    // Detectar sueldo pagado en los últimos días del mes anterior (días 24 al 31 de M-1)
+    // para que financie el mes activo (ej. Sueldo del 29/10 -> imputado a Noviembre 2026)
+    const lowerDesc = stripAccents(String(rawRow.description || '').toLowerCase());
+    const isLatePrevMonthSalary = Boolean(
+      filterActiveYm &&
+        prevYearMonth &&
+        rowYearMonth === prevYearMonth &&
+        dayOfMonth >= 24 &&
+        flow === 'in' &&
+        !internalType &&
+        (amount >= 500000 || /sueldo|remuneracion|haberes|nomina|anticipo|vias\s+spa/i.test(lowerDesc))
+    );
+
+    const targetBudgetMonth = isLatePrevMonthSalary ? filterActiveYm : rowYearMonth;
+    const isPreviousMonth = Boolean(
+      filterActiveYm && rowYearMonth && rowYearMonth < filterActiveYm && !isLatePrevMonthSalary
+    );
     const baseFp = buildBankFingerprint(date, amount, rawRow.description, flow);
     intraBatchBaseFpCounts[baseFp] = (intraBatchBaseFpCounts[baseFp] || 0) + 1;
     const occurrenceIndex = Number(rawRow.occurrenceIndex || intraBatchBaseFpCounts[baseFp] || 1);
@@ -1251,6 +1311,8 @@ export function reconcileStatementRows(
       ...rawRow,
       date,
       rowYearMonth,
+      targetBudgetMonth,
+      isLatePrevMonthSalary,
       isPreviousMonth,
       amount,
       flow,
@@ -1279,8 +1341,6 @@ export function reconcileStatementRows(
         selectedToImport: false
       };
     }
-
-    const internalType = detectInternalOrCardPayment(row.description, wifeName);
 
     // ========================================================================
     // RAMA A: ENTRADAS DE DINERO / ABONOS (flow === 'in')
@@ -1332,6 +1392,8 @@ export function reconcileStatementRows(
         inferredType: smartIn.abonoCategory,
         reimburseCategoryId: smartIn.reimburseCategoryId,
         suggestedCategoryId: smartIn.reimburseCategoryId,
+        extraBudgetPct: typeof smartIn.extraBudgetPct === 'number' ? smartIn.extraBudgetPct : 20,
+        extraTarget: smartIn.extraTarget || 'proportional_unlocked',
         smartHint: smartIn.smartHint,
         matchedTx: null,
         selectedToImport: shouldSelectIn

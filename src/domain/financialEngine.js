@@ -283,6 +283,16 @@ export function calculateLoansLedger(transactions = [], learnedContacts = {}) {
 }
 
 /**
+ * Resuelve el mes presupuestario ("YYYY-MM") al que se imputa un movimiento.
+ * Permite que el sueldo pagado los últimos días del mes anterior (ej. 29/10)
+ * se impute íntegro al mes siguiente (ej. "2026-11") conservando su fecha bancaria real.
+ */
+export function resolveTxBudgetMonth(tx) {
+  if (!tx) return '';
+  return String(tx.budgetMonth || tx.date || '').slice(0, 7);
+}
+
+/**
  * Calcula el resumen financiero mensual completo:
  * ingresos reales vs meta, ahorro meta, gasto bruto, reembolsos, gasto neto por categoría,
  * semáforos ('ok' | 'warn' | 'danger'), Escudo CMR (cmrSpent, cmrPaid, cmrNetReserve),
@@ -316,10 +326,12 @@ export function calculateMonthlyFinancialSummary(state = {}, activeYearMonth, to
   };
 
   const allTxs = Array.isArray(state?.transactions) ? state.transactions : [];
-  const txs = allTxs.filter((t) => t && String(t.date || '').startsWith(ym));
+  const txs = allTxs.filter((t) => t && resolveTxBudgetMonth(t) === ym);
 
   let realIncome = 0;
   let baseRealIncome = 0;
+  let hasBaseIncomeParts = false;
+  const baseIncomeItems = [];
   let extraIncomeTotal = 0;
   let extraIncomeToSavings = 0;
   let extraIncomeToBudget = 0;
@@ -348,7 +360,7 @@ export function calculateMonthlyFinancialSummary(state = {}, activeYearMonth, to
   for (const tx of allTxs) {
     if (!tx) continue;
     const amt = Math.max(0, Math.round(Number(tx.amount || 0)));
-    const txYm = String(tx.date || '').slice(0, 7);
+    const txYm = resolveTxBudgetMonth(tx);
     if (!txYm) continue;
 
     const isUpToActiveMonth = txYm <= ym;
@@ -391,14 +403,32 @@ export function calculateMonthlyFinancialSummary(state = {}, activeYearMonth, to
       if (tx.isExtraIncome || tx.extraIncomeMode) {
         extraIncomeTotal += amt;
         const mode = tx.extraIncomeMode || 'savings';
-        extraIncomeItems.push({ ...tx, amount: amt, extraIncomeMode: mode });
-        if (mode === 'savings') {
-          extraIncomeToSavings += amt;
-        } else {
-          extraIncomeToBudget += amt;
-        }
+        const hasCustomPct = typeof tx.extraBudgetPct === 'number' && !Number.isNaN(tx.extraBudgetPct);
+        const budgetPct = hasCustomPct
+          ? Math.max(0, Math.min(100, Math.round(Number(tx.extraBudgetPct))))
+          : (mode === 'savings' ? 0 : 100);
+        const toBudgetAmt = typeof tx.extraToBudgetAmount === 'number' && !Number.isNaN(tx.extraToBudgetAmount)
+          ? Math.max(0, Math.min(amt, Math.round(Number(tx.extraToBudgetAmount))))
+          : Math.round((amt * budgetPct) / 100);
+        const toSavingsAmt = Math.max(0, amt - toBudgetAmt);
+
+        extraIncomeToBudget += toBudgetAmt;
+        extraIncomeToSavings += toSavingsAmt;
+        extraIncomeItems.push({
+          ...tx,
+          amount: amt,
+          extraIncomeMode: mode,
+          extraBudgetPct: budgetPct,
+          extraSavingsPct: 100 - budgetPct,
+          extraToBudgetAmount: toBudgetAmt,
+          extraToSavingsAmount: toSavingsAmt
+        });
       } else {
         baseRealIncome += amt;
+        if (tx.isBaseIncomePart || tx.categoryId === 'sueldo_base') {
+          hasBaseIncomeParts = true;
+        }
+        baseIncomeItems.push({ ...tx, amount: amt });
       }
     } else if (tx.type === 'expense') {
       grossExpense += amt;
@@ -493,8 +523,10 @@ export function calculateMonthlyFinancialSummary(state = {}, activeYearMonth, to
   const netExpense = Math.max(0, grossExpense - totalReimbursements);
   const incomeTarget = monthCfg.incomeTarget;
   const baseSavingsGoal = monthCfg.savingsGoal;
-  const baseEffectiveIncome = baseRealIncome > 0 ? baseRealIncome : incomeTarget;
-  const effectiveIncome = extraIncomeTotal > 0
+  const baseEffectiveIncome = hasBaseIncomeParts
+    ? Math.max(incomeTarget, baseRealIncome)
+    : (baseRealIncome > 0 ? baseRealIncome : incomeTarget);
+  const effectiveIncome = (extraIncomeTotal > 0 || hasBaseIncomeParts)
     ? baseEffectiveIncome + extraIncomeTotal
     : (realIncome > 0 ? realIncome : incomeTarget);
   const savingsGoal = baseSavingsGoal + extraIncomeToSavings;
@@ -525,7 +557,7 @@ export function calculateMonthlyFinancialSummary(state = {}, activeYearMonth, to
   });
 
   const pendingFixedExpenses = fixedTemplatesStatus.filter((f) => !f.paid);
-  const paidFixedExpenses = fixedTemplatesStatus.filter((f) => f.paid);
+  const paidFixedExpenses = fixedTemplatesStatus.filter((f) => !f.paid === false);
   const pendingFixedTotal = pendingFixedExpenses.reduce((acc, f) => acc + f.pendingAmount, 0);
   const paidFixedTotal = paidFixedExpenses.reduce((acc, f) => acc + f.paidAmount, 0);
 
@@ -546,6 +578,7 @@ export function calculateMonthlyFinancialSummary(state = {}, activeYearMonth, to
     incomeTarget,
     realIncome,
     baseRealIncome,
+    baseIncomeItems,
     baseEffectiveIncome,
     extraIncomeTotal,
     extraIncomeToSavings,
@@ -802,7 +835,7 @@ export function filterTransactions(transactions = [], filterOptions = {}) {
     if (!tx) return false;
 
     if (yearMonth && yearMonth !== 'all') {
-      if (!String(tx.date || '').startsWith(yearMonth)) return false;
+      if (resolveTxBudgetMonth(tx) !== yearMonth && !String(tx.date || '').startsWith(yearMonth)) return false;
     }
 
     if (categoryId && categoryId !== 'all') {
