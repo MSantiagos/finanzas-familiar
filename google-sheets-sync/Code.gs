@@ -261,12 +261,27 @@ function mergeFamilyStates_(existing, incoming) {
     }
   });
 
-  // 6. Fusionar fixedTemplates por id (mapa por id)
+  // 6. Fusionar fixedTemplates por id respetando deletedFixedTemplateIds
+  var deletedFixed = {};
+  var existingDelFix = existing.deletedFixedTemplateIds || {};
+  var incomingDelFix = incoming.deletedFixedTemplateIds || {};
+  Object.keys(existingDelFix).forEach(function (fId) {
+    deletedFixed[fId] = existingDelFix[fId];
+  });
+  Object.keys(incomingDelFix).forEach(function (fId) {
+    var prevTs = String(deletedFixed[fId] || '');
+    var nextTs = String(incomingDelFix[fId] || '');
+    if (!prevTs || nextTs >= prevTs) {
+      deletedFixed[fId] = incomingDelFix[fId];
+    }
+  });
+
   var tplMap = {};
   var allTpls = (existing.fixedTemplates || []).concat(incoming.fixedTemplates || []);
   for (var j = 0; j < allTpls.length; j++) {
     var tpl = allTpls[j];
     if (!tpl || !tpl.id) continue;
+    if (deletedFixed[tpl.id]) continue;
     var prevTpl = tplMap[tpl.id];
     if (!prevTpl) {
       tplMap[tpl.id] = tpl;
@@ -414,6 +429,7 @@ function mergeFamilyStates_(existing, incoming) {
   merged.categories = incoming.categories || existing.categories;
   merged.monthlyBudgets = monthlyBudgets;
   merged.fixedTemplates = mergedTemplates;
+  merged.deletedFixedTemplateIds = deletedFixed;
   merged.annualSubscriptions = mergedAnnualSubscriptions;
   merged.deletedAnnualSubscriptionIds = deletedAnnual;
   merged.transactions = mergedTxs;
