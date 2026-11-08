@@ -166,7 +166,8 @@ export function createDefaultState() {
       wifeName: 'Marie',
       childName: 'Nuestra Hija (20m)',
       monthlyIncomeTarget: 2350000,
-      monthlySavingsGoal: 250000
+      monthlySavingsGoal: 250000,
+      updatedAt: nowISO
     },
     categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
     monthlyBudgets: {
@@ -180,6 +181,8 @@ export function createDefaultState() {
     fixedTemplates: DEFAULT_FIXED_TEMPLATE.map((t) => ({ ...t })),
     transactions: buildInitialSampleTransactions(ym),
     deletedTransactionIds: {},
+    patrimonyItems: [],
+    deletedPatrimonyIds: {},
     learnedContacts: {},
     sharedIntegrations: {
       googleSheetsWebhookUrl: '',
@@ -333,6 +336,51 @@ export function mergeFamilyStates(stateA, stateB) {
     return String(a.id || '').localeCompare(String(b.id || ''));
   });
 
+  // 5b. Unir Bóveda de Patrimonio Intocable (patrimonyItems + deletedPatrimonyIds)
+  const deletedPatrimonyIds = { ...(stateA.deletedPatrimonyIds || {}) };
+  for (const [pId, delTs] of Object.entries(stateB.deletedPatrimonyIds || {})) {
+    const prevTs = String(deletedPatrimonyIds[pId] || '');
+    if (!prevTs || String(delTs) >= prevTs) {
+      deletedPatrimonyIds[pId] = delTs;
+    }
+  }
+
+  const patMap = new Map();
+  for (const item of [...(stateA.patrimonyItems || []), ...(stateB.patrimonyItems || [])]) {
+    if (!item || !item.id) continue;
+    if (deletedPatrimonyIds[item.id]) continue;
+    const prevItem = patMap.get(item.id);
+    if (!prevItem) {
+      patMap.set(item.id, { ...item });
+    } else {
+      const uA = String(prevItem.updatedAt || prevItem.createdAt || '');
+      const uB = String(item.updatedAt || item.createdAt || '');
+      if (uB >= uA) {
+        patMap.set(item.id, { ...prevItem, ...item });
+      }
+    }
+  }
+
+  const mergedPatrimonyItems = Array.from(patMap.values()).sort(
+    (a, b) =>
+      Number(b.amount || 0) - Number(a.amount || 0) ||
+      String(a.id || '').localeCompare(String(b.id || ''))
+  );
+
+  // 5c. Unir familyConfig por updatedAt para evitar que valores por defecto pisen cambios reales
+  let mergedFamilyConfig = stateB.familyConfig || stateA.familyConfig;
+  if (stateA.familyConfig && stateB.familyConfig) {
+    const fcUA = String(stateA.familyConfig.updatedAt || '');
+    const fcUB = String(stateB.familyConfig.updatedAt || '');
+    if (fcUA && fcUB) {
+      mergedFamilyConfig = fcUB >= fcUA ? stateB.familyConfig : stateA.familyConfig;
+    } else if (fcUA && !fcUB) {
+      mergedFamilyConfig = stateA.familyConfig;
+    } else {
+      mergedFamilyConfig = stateB.familyConfig;
+    }
+  }
+
   // 6. Unir credenciales compartidas en red familiar conservando claves no vacías
   const sharedIntegrations = {
     googleSheetsWebhookUrl: '',
@@ -381,12 +429,14 @@ export function mergeFamilyStates(stateA, stateB) {
       ...stateA,
       ...stateB,
       version: 3,
-      familyConfig: stateB.familyConfig || stateA.familyConfig,
+      familyConfig: mergedFamilyConfig,
       categories: stateB.categories || stateA.categories || DEFAULT_CATEGORIES,
       monthlyBudgets,
       fixedTemplates: mergedTemplates,
       transactions: mergedTransactions,
       deletedTransactionIds,
+      patrimonyItems: mergedPatrimonyItems,
+      deletedPatrimonyIds,
       learnedContacts,
       sharedIntegrations,
       demoCleared,
@@ -529,6 +579,35 @@ export function setupAutoOnlineSync(onSyncCallback = null) {
   };
 }
 
+function notifyAsyncStateMerged(mergedState, source = 'sync') {
+  try {
+    const target = typeof window !== 'undefined' ? window : null;
+    if (target && typeof target.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+      target.dispatchEvent(
+        new CustomEvent('finanzas:state-merged', {
+          detail: { state: mergedState, source }
+        })
+      );
+    }
+  } catch {
+    // Entorno sin DOM (Node tests)
+  }
+}
+
+export function hasSignificantStateDiff(stateA, stateB) {
+  if (!stateA || !stateB) return true;
+  if (Boolean(stateA.demoCleared) !== Boolean(stateB.demoCleared)) return true;
+  if (JSON.stringify(stateA.transactions || []) !== JSON.stringify(stateB.transactions || [])) return true;
+  if (JSON.stringify(stateA.deletedTransactionIds || {}) !== JSON.stringify(stateB.deletedTransactionIds || {})) return true;
+  if (JSON.stringify(stateA.learnedContacts || {}) !== JSON.stringify(stateB.learnedContacts || {})) return true;
+  if (JSON.stringify(stateA.monthlyBudgets || {}) !== JSON.stringify(stateB.monthlyBudgets || {})) return true;
+  if (JSON.stringify(stateA.fixedTemplates || []) !== JSON.stringify(stateB.fixedTemplates || [])) return true;
+  if (JSON.stringify(stateA.patrimonyItems || []) !== JSON.stringify(stateB.patrimonyItems || [])) return true;
+  if (JSON.stringify(stateA.deletedPatrimonyIds || {}) !== JSON.stringify(stateB.deletedPatrimonyIds || {})) return true;
+  if (JSON.stringify(stateA.familyConfig || {}) !== JSON.stringify(stateB.familyConfig || {})) return true;
+  return false;
+}
+
 export function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -540,6 +619,8 @@ export function loadState() {
     const parsed = JSON.parse(raw);
     if (!parsed.learnedContacts) parsed.learnedContacts = {};
     if (!parsed.deletedTransactionIds) parsed.deletedTransactionIds = {};
+    if (!Array.isArray(parsed.patrimonyItems)) parsed.patrimonyItems = [];
+    if (!parsed.deletedPatrimonyIds) parsed.deletedPatrimonyIds = {};
     if (!parsed.sharedIntegrations) {
       const prefs = loadUserPrefs();
       parsed.sharedIntegrations = {
@@ -642,8 +723,12 @@ export function saveState(state, options = {}) {
       .then((res) => {
         if (res && res.status === 'ok' && res.payload) {
           const merged = mergeFamilyStates(state, res.payload);
+          const changed = hasSignificantStateDiff(state, merged);
           localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
           clearPendingSync('localWifi');
+          if (changed) {
+            notifyAsyncStateMerged(merged, 'localWifi');
+          }
         }
       })
       .catch(() => {
@@ -675,16 +760,15 @@ export async function syncFromLocalWifiServer(currentState) {
     const data = await resp.json();
     if (data.status === 'ok' && data.payload && Array.isArray(data.payload.transactions)) {
       const merged = mergeFamilyStates(currentState, data.payload);
-      const currentJson = JSON.stringify(currentState?.transactions || []);
-      const serverJson = JSON.stringify(data.payload?.transactions || []);
-      const mergedJson = JSON.stringify(merged.transactions || []);
+      const changedVsLocal = hasSignificantStateDiff(currentState, merged);
+      const changedVsServer = hasSignificantStateDiff(data.payload, merged);
 
       // Guardar en localStorage sin disparar bucle infinito
       localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
       clearPendingSync('localWifi');
 
-      // Si nuestra fusión local aportó transacciones que el servidor aún no tenía, enviárselas
-      if (mergedJson !== serverJson) {
+      // Si nuestra fusión local aportó cambios que el servidor aún no tenía, enviárselos
+      if (changedVsServer) {
         fetch('/api/state', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -701,10 +785,7 @@ export async function syncFromLocalWifiServer(currentState) {
 
       return {
         state: merged,
-        changed:
-          mergedJson !== currentJson ||
-          JSON.stringify(merged.learnedContacts) !== JSON.stringify(currentState?.learnedContacts) ||
-          JSON.stringify(merged.monthlyBudgets) !== JSON.stringify(currentState?.monthlyBudgets),
+        changed: changedVsLocal,
         localIp: data.localIp
       };
     } else if (data.status === 'empty' && currentState) {
@@ -784,7 +865,11 @@ export async function pushStateToGoogleSheets(state, webhookUrl) {
   const data = await response.json();
   if (data && data.status === 'ok' && data.payload) {
     const merged = mergeFamilyStates(state, data.payload);
+    const changed = hasSignificantStateDiff(state, merged);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+    if (changed) {
+      notifyAsyncStateMerged(merged, 'googleSheets');
+    }
   }
   clearPendingSync('googleSheets');
   const prefs = loadUserPrefs();
@@ -813,14 +898,13 @@ export async function syncFromCloudGoogleSheets(currentState) {
     const result = await response.json();
     if (result && result.status === 'ok' && result.payload && Array.isArray(result.payload.transactions)) {
       const merged = mergeFamilyStates(currentState, result.payload);
-      const currentJson = JSON.stringify(currentState?.transactions || []);
-      const remoteJson = JSON.stringify(result.payload?.transactions || []);
-      const mergedJson = JSON.stringify(merged.transactions || []);
+      const changedVsLocal = hasSignificantStateDiff(currentState, merged);
+      const changedVsRemote = hasSignificantStateDiff(result.payload, merged);
 
       localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
       clearPendingSync('googleSheets');
 
-      if (mergedJson !== remoteJson) {
+      if (changedVsRemote) {
         pushStateToGoogleSheets(merged, webhookUrl).catch(() => {});
       }
 
@@ -831,10 +915,7 @@ export async function syncFromCloudGoogleSheets(currentState) {
 
       return {
         state: merged,
-        changed:
-          mergedJson !== currentJson ||
-          JSON.stringify(merged.learnedContacts) !== JSON.stringify(currentState?.learnedContacts) ||
-          JSON.stringify(merged.monthlyBudgets) !== JSON.stringify(currentState?.monthlyBudgets)
+        changed: changedVsLocal
       };
     } else if (result && result.status === 'empty' && currentState) {
       await pushStateToGoogleSheets(currentState, webhookUrl).catch(() => {});
@@ -874,4 +955,28 @@ export async function pullStateFromGoogleSheets(webhookUrl, currentState = null)
     return mergedState;
   }
   return null;
+}
+
+export function exportStateToJsonString(state = null) {
+  const effective = state || loadState();
+  return JSON.stringify(effective, null, 2);
+}
+
+export function importStateFromJsonString(rawJson, currentState = null) {
+  if (!rawJson || !String(rawJson).trim()) {
+    throw new Error('El archivo JSON está vacío.');
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(rawJson);
+  } catch {
+    throw new Error('El archivo seleccionado no es un JSON válido.');
+  }
+  const incoming = parsed?.payload && typeof parsed.payload === 'object' ? parsed.payload : parsed;
+  if (!incoming || typeof incoming !== 'object' || !Array.isArray(incoming.transactions)) {
+    throw new Error('El respaldo JSON no contiene una estructura válida de Finanzas Familiar.');
+  }
+  const base = currentState || loadState();
+  const merged = mergeFamilyStates(base, incoming);
+  return saveState(merged);
 }

@@ -263,6 +263,59 @@ function mergeFamilyStates_(existing, incoming) {
     return String(a.id || '').localeCompare(String(b.id || ''));
   });
 
+  // 6b. Fusionar Bóveda de Patrimonio Intocable (patrimonyItems + deletedPatrimonyIds)
+  var deletedPatrimony = {};
+  var existingDelPat = existing.deletedPatrimonyIds || {};
+  var incomingDelPat = incoming.deletedPatrimonyIds || {};
+  Object.keys(existingDelPat).forEach(function (pId) {
+    deletedPatrimony[pId] = existingDelPat[pId];
+  });
+  Object.keys(incomingDelPat).forEach(function (pId) {
+    var prevTs = String(deletedPatrimony[pId] || '');
+    var nextTs = String(incomingDelPat[pId] || '');
+    if (!prevTs || nextTs >= prevTs) {
+      deletedPatrimony[pId] = incomingDelPat[pId];
+    }
+  });
+
+  var patMap = {};
+  var allPat = (existing.patrimonyItems || []).concat(incoming.patrimonyItems || []);
+  for (var pIdx = 0; pIdx < allPat.length; pIdx++) {
+    var pat = allPat[pIdx];
+    if (!pat || !pat.id) continue;
+    if (deletedPatrimony[pat.id]) continue;
+    var prevPat = patMap[pat.id];
+    if (!prevPat) {
+      patMap[pat.id] = Object.assign({}, pat);
+    } else {
+      var patUA = String(prevPat.updatedAt || prevPat.createdAt || '');
+      var patUB = String(pat.updatedAt || pat.createdAt || '');
+      if (patUB >= patUA) {
+        patMap[pat.id] = Object.assign({}, prevPat, pat);
+      }
+    }
+  }
+  var mergedPatrimony = Object.keys(patMap).map(function (id) { return patMap[id]; });
+  mergedPatrimony.sort(function (a, b) {
+    var diffAmt = Number(b.amount || 0) - Number(a.amount || 0);
+    if (diffAmt !== 0) return diffAmt;
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  });
+
+  // 6c. Fusionar familyConfig por updatedAt
+  var mergedFamilyConfig = incoming.familyConfig || existing.familyConfig;
+  if (existing.familyConfig && incoming.familyConfig) {
+    var fcUA = String(existing.familyConfig.updatedAt || '');
+    var fcUB = String(incoming.familyConfig.updatedAt || '');
+    if (fcUA && fcUB) {
+      mergedFamilyConfig = fcUB >= fcUA ? incoming.familyConfig : existing.familyConfig;
+    } else if (fcUA && !fcUB) {
+      mergedFamilyConfig = existing.familyConfig;
+    } else {
+      mergedFamilyConfig = incoming.familyConfig;
+    }
+  }
+
   // 7. Fusionar sharedIntegrations conservando claves no vacías (googleSheetsWebhookUrl, googleSheetsUrl, geminiApiKey)
   var sharedIntegrations = {
     googleSheetsWebhookUrl: '',
@@ -293,12 +346,14 @@ function mergeFamilyStates_(existing, incoming) {
 
   var merged = Object.assign({}, existing, incoming);
   merged.version = 3;
-  merged.familyConfig = incoming.familyConfig || existing.familyConfig;
+  merged.familyConfig = mergedFamilyConfig;
   merged.categories = incoming.categories || existing.categories;
   merged.monthlyBudgets = monthlyBudgets;
   merged.fixedTemplates = mergedTemplates;
   merged.transactions = mergedTxs;
   merged.deletedTransactionIds = deleted;
+  merged.patrimonyItems = mergedPatrimony;
+  merged.deletedPatrimonyIds = deletedPatrimony;
   merged.learnedContacts = learnedContacts;
   merged.sharedIntegrations = sharedIntegrations;
   merged.demoCleared = demoCleared;

@@ -511,6 +511,9 @@ export function calculateMonthlyFinancialSummary(state = {}, activeYearMonth, to
   // Libro de préstamos
   const loansLedger = calculateLoansLedger(allTxs, state?.learnedContacts || {});
 
+  // Bóveda de Patrimonio Intocable (100% aislada del presupuesto mensual)
+  const patrimonySummary = calculatePatrimonySummary(state);
+
   return {
     yearMonth: ym,
     todayISO: calendar.todayISO,
@@ -563,6 +566,9 @@ export function calculateMonthlyFinancialSummary(state = {}, activeYearMonth, to
     loansByPerson: loansLedger.loansByPerson,
     totalLoansOwedToOthers: loansLedger.totalOwedByUs,
     totalLoansReceivable: loansLedger.totalOwedToUs,
+    // Bóveda de Patrimonio Intocable (Cripto / Ahorro Histórico)
+    patrimonySummary,
+    totalPatrimonyCLP: patrimonySummary.totalPatrimonyCLP,
     // Calendario
     daysInMonth: calendar.daysInMonth,
     currentDay: calendar.currentDay,
@@ -570,6 +576,64 @@ export function calculateMonthlyFinancialSummary(state = {}, activeYearMonth, to
     daysRemaining: calendar.daysRemaining,
     daysLeftAfterToday: calendar.daysLeftAfterToday,
     monthProgressPct: calendar.monthProgressPct
+  };
+}
+
+/**
+ * Calcula el resumen de la Bóveda de Patrimonio Intocable (Ahorro Histórico, Fondo de Emergencia,
+ * Criptomonedas en Binance/Bitcoin, APV/Fondos Mutuos).
+ * Garantía contable: Estos montos NUNCA se suman al ingreso mensual ni al disponible para gastar del mes.
+ */
+export function calculatePatrimonySummary(state = {}) {
+  const rawItems = Array.isArray(state?.patrimonyItems) ? state.patrimonyItems : [];
+  const deletedMap = state?.deletedPatrimonyIds || {};
+
+  let totalPatrimonyCLP = 0;
+  let cryptoTotal = 0;
+  let emergencyTotal = 0;
+  let investmentTotal = 0;
+  let otherTotal = 0;
+
+  const items = [];
+  for (const raw of rawItems) {
+    if (!raw || !raw.id || deletedMap[raw.id]) continue;
+    const amount = Math.max(0, Math.round(Number(raw.amountCLP ?? raw.amount ?? 0)));
+    const category = raw.category || 'historical_savings';
+    totalPatrimonyCLP += amount;
+    if (category === 'crypto' || category === 'crypto_hold') {
+      cryptoTotal += amount;
+    } else if (category === 'emergency' || category === 'emergency_fund') {
+      emergencyTotal += amount;
+    } else if (category === 'investment') {
+      investmentTotal += amount;
+    } else {
+      otherTotal += amount;
+    }
+    items.push({
+      ...raw,
+      amount,
+      amountCLP: amount,
+      category
+    });
+  }
+
+  items.sort(
+    (a, b) =>
+      b.amount - a.amount || String(a.name || '').localeCompare(String(b.name || ''), 'es')
+  );
+
+  return {
+    totalPatrimonyCLP,
+    cryptoTotal,
+    cryptoHoldCLP: cryptoTotal,
+    emergencyTotal,
+    emergencyFundCLP: emergencyTotal,
+    investmentTotal,
+    investmentsCLP: investmentTotal,
+    otherTotal,
+    historicalSavingsCLP: otherTotal,
+    count: items.length,
+    items
   };
 }
 

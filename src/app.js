@@ -1,7 +1,7 @@
 import {
   PAYMENT_METHODS,
   SAMPLE_BANK_STATEMENT_TEXT
-} from './data/defaults.js?v=11';
+} from './data/defaults.js?v=12';
 import {
   loadState,
   saveState,
@@ -13,8 +13,11 @@ import {
   pushStateToGoogleSheets,
   pullStateFromGoogleSheets,
   syncFromLocalWifiServer,
-  syncFromCloudGoogleSheets
-} from './services/storage.js?v=11';
+  syncFromCloudGoogleSheets,
+  setupAutoOnlineSync,
+  exportStateToJsonString,
+  importStateFromJsonString
+} from './services/storage.js?v=12';
 import {
   parseBankStatementText,
   reconcileStatementRows,
@@ -22,23 +25,24 @@ import {
   formatLiveCLPInput,
   normalizeContactKey,
   extractContactDisplayName
-} from './services/reconciler.js?v=11';
+} from './services/reconciler.js?v=12';
 import {
   scanReceiptWithGemini,
   classifyStatementRowsWithGemini,
   getDemoScannedReceipt,
   generateMonthlyFamilyAuditWithGemini
-} from './services/geminiScanner.js?v=11';
-import { exportStateToExcel } from './services/excelExport.js?v=11';
+} from './services/geminiScanner.js?v=12';
+import { exportStateToExcel } from './services/excelExport.js?v=12';
 import {
   parseQuickNaturalExpense,
   buildInstallmentTransactions,
   getQuickPresetsForAuthor
-} from './services/smartInput.js?v=11';
+} from './services/smartInput.js?v=12';
 import {
   calculateMonthlyFinancialSummary,
   calculateBurnRateAndProjection,
   calculateLoansLedger,
+  calculatePatrimonySummary,
   filterTransactions,
   calculateFilteredTransactionsTotals,
   generateInstantFamilyDiagnosis,
@@ -46,7 +50,7 @@ import {
   calculateMultiMonthComparison,
   clonePreviousMonthBudget,
   buildCoupleWhatsAppMessages
-} from './domain/financialEngine.js?v=11';
+} from './domain/financialEngine.js?v=12';
 
 // Estado global en memoria de la aplicación
 let appState = loadState();
@@ -139,6 +143,11 @@ let pendingSyncRender = false;
 // Estado de edición rápida en modal (1 toque) y último borrado para "Deshacer"
 let editingTxId = null;
 let lastDeletedTx = null;
+let lastDeletedBatch = null;
+
+// Estado de la Bóveda de Patrimonio Intocable & Cripto (pestaña Presupuestos)
+let isAddingPatrimonyItem = false;
+let editingPatrimonyId = null;
 
 // Estado del buscador y filtros instantáneos del historial de movimientos
 let txFilterState = {
@@ -1499,6 +1508,9 @@ function renderEditTransactionModal() {
   const tx = (appState.transactions || []).find((t) => t.id === editingTxId);
   if (!tx) return '';
   const categories = appState.categories || [];
+  const fixedTemplates = appState.fixedTemplates || [];
+  const showCategory = tx.type === 'expense' || tx.type === 'reimbursement';
+  const showFixedLink = tx.type === 'expense';
 
   return `
     <div class="modal-backdrop" data-action="close-edit-modal-backdrop">
@@ -1520,16 +1532,40 @@ function renderEditTransactionModal() {
             </div>
           </div>
 
-          ${tx.type === 'expense' || tx.type === 'reimbursement' ? `
-            <div class="input-group" style="margin-bottom:10px;">
-              <label>Categoría</label>
-              <select id="edit-tx-category" class="text-input">
-                ${categories.map((c) => `
-                  <option value="${c.id}" ${tx.categoryId === c.id ? 'selected' : ''}>${c.icon} ${c.name}</option>
-                `).join('')}
-              </select>
-            </div>
-          ` : ''}
+          <div class="input-group" style="margin-bottom:10px;">
+            <label>Naturaleza del Movimiento</label>
+            <select id="edit-tx-type" class="text-input">
+              <option value="expense" ${tx.type === 'expense' ? 'selected' : ''}>💸 Gasto Familiar Real</option>
+              <option value="reimbursement" ${tx.type === 'reimbursement' ? 'selected' : ''}>↩️ Reembolso / Devolución (Suma cupo)</option>
+              <option value="income" ${tx.type === 'income' ? 'selected' : ''}>💰 Ingreso del Mes</option>
+              <option value="transfer_wife" ${tx.type === 'transfer_wife' ? 'selected' : ''}>💖 Recarga a Fondo Familiar de Marie</option>
+              <option value="cmr_payment" ${tx.type === 'cmr_payment' ? 'selected' : ''}>🟢 Pago Facturación CMR Falabella</option>
+              <option value="loan_given" ${tx.type === 'loan_given' ? 'selected' : ''}>🤝 Presté plata / Encargo por cobrar</option>
+              <option value="loan_collected" ${tx.type === 'loan_collected' ? 'selected' : ''}>🤝 Me devolvieron préstamo que me debían</option>
+              <option value="loan_received" ${tx.type === 'loan_received' ? 'selected' : ''}>📥 Me prestaron plata (Debo devolver)</option>
+              <option value="loan_repaid" ${tx.type === 'loan_repaid' ? 'selected' : ''}>📤 Devolución de préstamo que debía</option>
+              <option value="savings_withdrawal" ${tx.type === 'savings_withdrawal' ? 'selected' : ''}>🚨 Rescate desde Ahorros</option>
+            </select>
+          </div>
+
+          <div id="edit-tx-cat-group" class="input-group" style="margin-bottom:10px;${showCategory ? '' : 'display:none;'}">
+            <label>Categoría</label>
+            <select id="edit-tx-category" class="text-input">
+              ${categories.map((c) => `
+                <option value="${c.id}" ${tx.categoryId === c.id ? 'selected' : ''}>${c.icon} ${c.name}</option>
+              `).join('')}
+            </select>
+          </div>
+
+          <div id="edit-tx-fixed-group" class="input-group" style="margin-bottom:10px;${showFixedLink ? '' : 'display:none;'}">
+            <label>🏠 Vincular a Cuenta Fija del Mes (Opcional)</label>
+            <select id="edit-tx-fixed-tpl" class="text-input">
+              <option value="">— Gasto variable normal (No es cuenta fija) —</option>
+              ${fixedTemplates.map((tpl) => `
+                <option value="${tpl.id}" ${tx.fixedTemplateId === tpl.id ? 'selected' : ''}>🏠 ${tpl.name} (~${formatCLP(tpl.estimatedAmount)})</option>
+              `).join('')}
+            </select>
+          </div>
 
           <div class="form-row-two">
             <div class="input-group">
@@ -1829,6 +1865,197 @@ function renderBudgetTab(metrics) {
             `;
           }).join('')}
         </div>
+      `}
+    </section>
+
+    ${renderPatrimonyVaultSection(metrics)}
+  `;
+}
+
+function renderPatrimonyVaultSection(metrics) {
+  const patrimony = metrics.patrimonySummary || calculatePatrimonySummary(appState);
+  const items = patrimony.items || [];
+  const editingItem = editingPatrimonyId ? items.find((i) => i.id === editingPatrimonyId) : null;
+  const showForm = isAddingPatrimonyItem || Boolean(editingItem) || items.length === 0;
+  const hasBtcPresetAlready = items.some((i) => /bitcoin|btc|binance/i.test(`${i.name || ''} ${i.institution || ''}`));
+
+  const categoryLabels = {
+    crypto_hold: { icon: '₿', label: 'Cripto / Bitcoin (Hold Intocable)' },
+    emergency_fund: { icon: '🛡️', label: 'Fondo de Emergencia / Colchón' },
+    investment: { icon: '📈', label: 'Inversión / DAP / Fondos Mutuos / APV' },
+    historical_savings: { icon: '🏦', label: 'Ahorro Histórico / Cuenta de Ahorro' }
+  };
+
+  return `
+    <section class="card-panel mt-section" style="border:1.5px solid var(--border-strong);">
+      <div class="section-header-row">
+        <div>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;">
+            <h2 class="section-title" style="margin:0;">🏦 Bóveda de Patrimonio Intocable & Cripto</h2>
+            <span class="sem-badge bar-green" style="font-size:0.73rem;">🔒 100% Aislada del Presupuesto Mensual</span>
+          </div>
+          <p class="section-subtitle" style="margin-top:4px;">
+            Registra tus ahorros históricos, Fondo de Emergencia o tu Bitcoin en Binance (~$5.000.000).
+            <strong>Estos fondos están blindados: jamás inflan tu cupo diario ni se mezclan con la plata para gastar este mes.</strong>
+          </p>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+          ${!hasBtcPresetAlready ? `
+            <button type="button" class="btn-secondary" data-action="preset-patrimony-btc" style="border-color:#f59e0b;color:#b45309;">
+              ₿ Cargar Bitcoin Binance ($5.000.000)
+            </button>
+          ` : ''}
+          <button type="button" class="btn-secondary" data-action="toggle-add-patrimony">
+            ${isAddingPatrimonyItem || editingItem ? '✖️ Cerrar Formulario' : '➕ Agregar Ahorro / Activo'}
+          </button>
+        </div>
+      </div>
+
+      <div class="kpi-grid" style="margin-top:12px;margin-bottom:14px;">
+        <div class="kpi-card kpi-safe" style="padding:12px 14px;">
+          <span class="kpi-title">💎 Patrimonio Total Acumulado</span>
+          <strong class="kpi-num" style="font-size:1.35rem;">${formatCLP(patrimony.totalPatrimonyCLP)}</strong>
+          <span class="kpi-sub">${patrimony.count} activo(s) fuera del gasto mensual</span>
+        </div>
+        <div class="kpi-card kpi-income" style="padding:12px 14px;">
+          <span class="kpi-title">₿ Cripto / Hold Largo Plazo</span>
+          <strong class="kpi-num" style="font-size:1.35rem;">${formatCLP(patrimony.cryptoHoldCLP)}</strong>
+          <span class="kpi-sub">Reserva intocable (Binance / BTC)</span>
+        </div>
+        <div class="kpi-card kpi-spent" style="padding:12px 14px;">
+          <span class="kpi-title">🛡️ Fondo Emergencia & Inversiones</span>
+          <strong class="kpi-num" style="font-size:1.35rem;">${formatCLP(patrimony.emergencyFundCLP + patrimony.investmentsCLP)}</strong>
+          <span class="kpi-sub">Liquidez de respaldo familiar</span>
+        </div>
+      </div>
+
+      ${showForm ? `
+        <form id="patrimony-item-form" class="budget-editor-box" style="margin-bottom:14px;">
+          <h4 style="margin:0 0 10px;font-size:0.88rem;">
+            ${editingItem ? `✏️ Editar Activo: ${editingItem.name}` : '➕ Registrar Activo en la Bóveda Patrimonial'}
+          </h4>
+          <div class="form-row-two">
+            <div class="input-group">
+              <label>Nombre del Activo / Ahorro</label>
+              <input
+                type="text"
+                id="pat-name-input"
+                class="text-input"
+                placeholder="Ej: Bitcoin (BTC) — Hold Largo Plazo"
+                value="${editingItem ? editingItem.name : ''}"
+                required
+              />
+            </div>
+            <div class="input-group">
+              <label>Monto Estimado en Pesos (CLP)</label>
+              <input
+                type="text"
+                inputmode="numeric"
+                id="pat-amt-input"
+                class="text-input live-clp-input"
+                placeholder="5.000.000"
+                value="${editingItem ? formatLiveCLPInput(editingItem.amountCLP) : ''}"
+                required
+              />
+            </div>
+          </div>
+
+          <div class="form-row-two">
+            <div class="input-group">
+              <label>Tipo de Reserva</label>
+              <select id="pat-cat-select" class="text-input">
+                <option value="crypto_hold" ${editingItem?.category === 'crypto_hold' ? 'selected' : ''}>₿ Cripto / Bitcoin (Hold Intocable Largo Plazo)</option>
+                <option value="emergency_fund" ${editingItem?.category === 'emergency_fund' ? 'selected' : ''}>🛡️ Fondo de Emergencia / Colchón Familiar</option>
+                <option value="investment" ${editingItem?.category === 'investment' ? 'selected' : ''}>📈 Inversión / DAP / Fondos Mutuos / APV</option>
+                <option value="historical_savings" ${!editingItem || editingItem?.category === 'historical_savings' ? 'selected' : ''}>🏦 Ahorro Histórico / Cuenta de Ahorro</option>
+              </select>
+            </div>
+            <div class="input-group">
+              <label>Institución / Custodia</label>
+              <input
+                type="text"
+                id="pat-inst-input"
+                class="text-input"
+                placeholder="Ej: Binance, Banco de Chile, Fintual..."
+                value="${editingItem ? editingItem.institution || '' : ''}"
+              />
+            </div>
+          </div>
+
+          <div class="form-row-two">
+            <div class="input-group">
+              <label>Titular</label>
+              <select id="pat-owner-select" class="text-input">
+                <option value="ambos" ${!editingItem || editingItem?.owner === 'ambos' ? 'selected' : ''}>👨‍👩‍👧 Familiar (Ambos)</option>
+                <option value="el" ${editingItem?.owner === 'el' ? 'selected' : ''}>🧔‍♂️ Mauricio</option>
+                <option value="ella" ${editingItem?.owner === 'ella' ? 'selected' : ''}>👩🏻 Marie</option>
+              </select>
+            </div>
+            <div class="input-group">
+              <label>Nota / Regla de Oro (Opcional)</label>
+              <input
+                type="text"
+                id="pat-note-input"
+                class="text-input"
+                placeholder="Ej: No retirar nunca — ahorro largo plazo"
+                value="${editingItem ? editingItem.note || '' : ''}"
+              />
+            </div>
+          </div>
+
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;">
+            <button type="submit" class="btn-primary">
+              💾 ${editingItem ? 'Actualizar Activo Patrimonial' : 'Guardar en Bóveda Intocable'}
+            </button>
+            ${editingItem || isAddingPatrimonyItem ? `
+              <button type="button" class="btn-secondary" data-action="cancel-patrimony-edit">
+                Cancelar
+              </button>
+            ` : ''}
+          </div>
+        </form>
+      ` : ''}
+
+      ${items.length > 0 ? `
+        <div class="tx-list">
+          ${items.map((item) => {
+            const catMeta = categoryLabels[item.category] || categoryLabels.historical_savings;
+            const ownerBadge = item.owner === 'ella' ? '👩🏻 Marie' : item.owner === 'el' ? '🧔‍♂️ Mauricio' : '👨‍👩‍👧 Familiar';
+            return `
+              <div class="tx-row">
+                <div class="tx-left" data-action="edit-patrimony-item" data-id="${item.id}" title="Toca para actualizar el valor de este activo">
+                  <div class="tx-icon-circle">${catMeta.icon}</div>
+                  <div class="tx-info">
+                    <div class="tx-title-line">
+                      <strong>${item.name}</strong>
+                      ${item.institution ? `<span class="badge-fixed">🏛️ ${item.institution}</span>` : ''}
+                      <span class="badge-reconciled">🔒 Intocable</span>
+                    </div>
+                    <div class="tx-note-line">${item.note || catMeta.label}</div>
+                    <div class="tx-meta-line">
+                      <span>${catMeta.label}</span>
+                      <span>•</span>
+                      <span>${ownerBadge}</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="tx-right">
+                  <div class="tx-amount tx-amt-income">${formatCLP(item.amountCLP)}</div>
+                  <button type="button" class="btn-edit-tx" data-action="edit-patrimony-item" data-id="${item.id}" title="Editar monto o detalle">
+                    ✏️
+                  </button>
+                  <button type="button" class="btn-delete-tx" data-action="delete-patrimony-item" data-id="${item.id}" title="Eliminar de la bóveda">
+                    🗑️
+                  </button>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      ` : `
+        <p style="font-size:0.82rem;color:var(--text-muted);margin:4px 0 0;">
+          Aún no has registrado activos en tu bóveda patrimonial. Usa el botón <strong>"₿ Cargar Bitcoin Binance ($5.000.000)"</strong> o completa el formulario arriba.
+        </p>
       `}
     </section>
   `;
@@ -2313,6 +2540,22 @@ function renderCloudTab() {
         <button type="button" class="btn-primary-giant mt-sm" data-action="export-excel">
           📥 Descargar Libro Excel Completo (.xlsx)
         </button>
+
+        <hr class="divider" />
+
+        <h3 class="section-title">💾 Respaldo y Restauración Instantánea (.json)</h3>
+        <p class="section-subtitle">
+          Guarda una copia íntegra de toda tu historia financiera (movimientos, presupuestos, bóveda cripto y contactos aprendidos) o fusiónala en 1 clic sin perder nada.
+        </p>
+        <div class="cloud-actions-row mt-sm" style="display:flex;flex-wrap:wrap;gap:8px;">
+          <button type="button" class="btn-secondary" data-action="export-json-backup">
+            💾 Descargar Respaldo (.json)
+          </button>
+          <button type="button" class="btn-secondary" data-action="trigger-import-json-backup">
+            📂 Restaurar / Fusionar Respaldo (.json)
+          </button>
+          <input type="file" id="import-json-backup-input" accept=".json,application/json" style="display:none;" />
+        </div>
       </section>
     </div>
   `;
@@ -2569,6 +2812,17 @@ function attachDynamicInputListeners() {
   }
 
   // Modal de Edición Rápida (1 toque)
+  const editTxTypeSel = document.getElementById('edit-tx-type');
+  if (editTxTypeSel) {
+    editTxTypeSel.onchange = (e) => {
+      const val = e.target.value;
+      const catGrp = document.getElementById('edit-tx-cat-group');
+      const fixGrp = document.getElementById('edit-tx-fixed-group');
+      if (catGrp) catGrp.style.display = val === 'expense' || val === 'reimbursement' ? '' : 'none';
+      if (fixGrp) fixGrp.style.display = val === 'expense' ? '' : 'none';
+    };
+  }
+
   const editTxForm = document.getElementById('edit-tx-form');
   if (editTxForm) {
     editTxForm.onsubmit = (e) => {
@@ -2586,8 +2840,33 @@ function attachDynamicInputListeners() {
       }
       target.amount = newAmt;
       target.date = document.getElementById('edit-tx-date')?.value || target.date;
+      const typeEl = document.getElementById('edit-tx-type');
+      if (typeEl && typeEl.value) {
+        target.type = typeEl.value;
+      }
       const catEl = document.getElementById('edit-tx-category');
-      if (catEl) target.categoryId = catEl.value;
+      if (catEl && (target.type === 'expense' || target.type === 'reimbursement')) {
+        target.categoryId = catEl.value;
+      } else if (target.type === 'transfer_wife') {
+        target.categoryId = 'traspaso_interno';
+      } else if (target.type === 'cmr_payment') {
+        target.categoryId = 'pago_tarjeta';
+      } else if (target.type === 'income') {
+        target.categoryId = 'ingreso_sueldo';
+      } else if (['loan_given', 'loan_collected', 'loan_received', 'loan_repaid'].includes(target.type)) {
+        target.categoryId = 'prestamo_encargo';
+      }
+
+      const fixedTplEl = document.getElementById('edit-tx-fixed-tpl');
+      if (fixedTplEl) {
+        const tplVal = fixedTplEl.value || '';
+        if (target.type === 'expense' && tplVal) {
+          target.fixedTemplateId = tplVal;
+        } else {
+          delete target.fixedTemplateId;
+        }
+      }
+
       target.paymentMethod = document.getElementById('edit-tx-pm')?.value || target.paymentMethod;
       target.author = document.getElementById('edit-tx-author')?.value || target.author;
       target.note = document.getElementById('edit-tx-note')?.value?.trim() || target.note;
@@ -2679,10 +2958,18 @@ function attachDynamicInputListeners() {
     budgetEditorForm.onsubmit = (e) => {
       e.preventDefault();
       const fd = new FormData(budgetEditorForm);
+      const nowISO = new Date().toISOString();
       const monthCfg = appState.monthlyBudgets[activeYearMonth];
-      monthCfg.incomeTarget = cleanChileanAmount(fd.get('incomeTarget'));
-      monthCfg.savingsGoal = cleanChileanAmount(fd.get('savingsGoal'));
-      monthCfg.updatedAt = new Date().toISOString();
+      const newIncomeTarget = cleanChileanAmount(fd.get('incomeTarget'));
+      const newSavingsGoal = cleanChileanAmount(fd.get('savingsGoal'));
+      monthCfg.incomeTarget = newIncomeTarget;
+      monthCfg.savingsGoal = newSavingsGoal;
+      monthCfg.updatedAt = nowISO;
+
+      if (!appState.familyConfig) appState.familyConfig = {};
+      appState.familyConfig.monthlyIncomeTarget = newIncomeTarget;
+      appState.familyConfig.monthlySavingsGoal = newSavingsGoal;
+      appState.familyConfig.updatedAt = nowISO;
 
       (appState.categories || []).forEach((cat) => {
         monthCfg.categories[cat.id] = cleanChileanAmount(fd.get(`cat_${cat.id}`));
@@ -2691,6 +2978,59 @@ function attachDynamicInputListeners() {
       isEditingBudgets = false;
       saveState(appState);
       showToast('✅ Presupuestos y meta de ahorro actualizados', 'success');
+      renderApp();
+    };
+  }
+
+  // Formulario de la Bóveda de Patrimonio Intocable & Cripto
+  const patrimonyForm = document.getElementById('patrimony-item-form');
+  if (patrimonyForm) {
+    patrimonyForm.onsubmit = (e) => {
+      e.preventDefault();
+      const name = document.getElementById('pat-name-input')?.value?.trim() || '';
+      const amountCLP = cleanChileanAmount(document.getElementById('pat-amt-input')?.value);
+      const category = document.getElementById('pat-cat-select')?.value || 'historical_savings';
+      const institution = document.getElementById('pat-inst-input')?.value?.trim() || '';
+      const owner = document.getElementById('pat-owner-select')?.value || 'ambos';
+      const note = document.getElementById('pat-note-input')?.value?.trim() || '';
+
+      if (!name || amountCLP <= 0) {
+        showToast('Ingresa el nombre del activo y un monto mayor a $0', 'error');
+        return;
+      }
+
+      const nowISO = new Date().toISOString();
+      if (!Array.isArray(appState.patrimonyItems)) appState.patrimonyItems = [];
+
+      if (editingPatrimonyId) {
+        const existing = appState.patrimonyItems.find((i) => i.id === editingPatrimonyId);
+        if (existing) {
+          existing.name = name;
+          existing.amountCLP = amountCLP;
+          existing.category = category;
+          existing.institution = institution;
+          existing.owner = owner;
+          existing.note = note;
+          existing.updatedAt = nowISO;
+        }
+      } else {
+        appState.patrimonyItems.push({
+          id: `pat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          name,
+          amountCLP,
+          category,
+          institution,
+          owner,
+          note,
+          createdAt: nowISO,
+          updatedAt: nowISO
+        });
+      }
+
+      editingPatrimonyId = null;
+      isAddingPatrimonyItem = false;
+      saveState(appState);
+      showToast(`🏦 "${name}" (${formatCLP(amountCLP)}) guardado en la Bóveda Intocable`, 'success');
       renderApp();
     };
   }
@@ -2754,7 +3094,8 @@ function attachDynamicInputListeners() {
           monthTxs,
           appState.familyConfig?.wifeName,
           appState.transactions,
-          appState.learnedContacts || {}
+          appState.learnedContacts || {},
+          appState.fixedTemplates || []
         );
         const needReview = reconcileState.analyzedRows.filter(
           (r) => r.status === 'forgotten_new' || r.status === 'incoming_abono'
@@ -2765,6 +3106,25 @@ function attachDynamicInputListeners() {
         showToast('📂 Archivo cargado. Haz clic en "Analizar Cartola"', 'success');
       }
       renderApp();
+    };
+  }
+
+  // Importar archivo de respaldo JSON (1 clic)
+  const jsonBackupInput = document.getElementById('import-json-backup-input');
+  if (jsonBackupInput) {
+    jsonBackupInput.onchange = async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const rawJson = await file.text();
+        const merged = importStateFromJsonString(rawJson, appState);
+        appState = merged;
+        userPrefs = loadUserPrefs();
+        showToast('✅ Respaldo JSON restaurado y fusionado sin pérdida de datos', 'success');
+        renderApp();
+      } catch (err) {
+        showToast(err.message || 'No se pudo leer el archivo JSON de respaldo', 'error');
+      }
     };
   }
 
@@ -3202,7 +3562,7 @@ document.addEventListener('click', async (e) => {
   }
 
   if (action === 'send-couple-whatsapp') {
-    const kind = btn.dataset.msgKind || 'weeklyTeamSummary';
+    const kind = btn.dataset.msgKind || btn.dataset.msgType || 'weeklyTeamSummary';
     const metrics = getMonthMetrics(activeYearMonth);
     const msgs = metrics.coupleWhatsApp || buildCoupleWhatsAppMessages(metrics, appState, activeYearMonth);
     const chosen = msgs?.[kind] || msgs?.weeklyTeamSummary;
@@ -3219,10 +3579,72 @@ document.addEventListener('click', async (e) => {
     const res = clonePreviousMonthBudget(appState, activeYearMonth);
     saveState(appState);
     if (res && res.clonedFrom) {
-      showToast(`📋 Presupuesto copiado desde ${formatMonthLabel(res.clonedFrom)}`, 'success');
+      showToast(`📋 Presupuesto copiado desde ${getMonthNameLabel(res.clonedFrom)}`, 'success');
     } else {
       showToast('📋 Presupuesto base aplicado para este mes', 'success');
     }
+    renderApp();
+    return;
+  }
+
+  if (action === 'toggle-add-patrimony') {
+    if (isAddingPatrimonyItem || editingPatrimonyId) {
+      isAddingPatrimonyItem = false;
+      editingPatrimonyId = null;
+    } else {
+      isAddingPatrimonyItem = true;
+      editingPatrimonyId = null;
+    }
+    renderApp();
+    return;
+  }
+
+  if (action === 'cancel-patrimony-edit') {
+    isAddingPatrimonyItem = false;
+    editingPatrimonyId = null;
+    renderApp();
+    return;
+  }
+
+  if (action === 'edit-patrimony-item') {
+    editingPatrimonyId = btn.dataset.id || null;
+    isAddingPatrimonyItem = false;
+    renderApp();
+    return;
+  }
+
+  if (action === 'delete-patrimony-item') {
+    const id = btn.dataset.id;
+    if (!id) return;
+    const nowISO = new Date().toISOString();
+    if (!appState.deletedPatrimonyIds) appState.deletedPatrimonyIds = {};
+    appState.deletedPatrimonyIds[id] = nowISO;
+    appState.patrimonyItems = (appState.patrimonyItems || []).filter((i) => i.id !== id);
+    if (editingPatrimonyId === id) editingPatrimonyId = null;
+    saveState(appState);
+    showToast('🗑️ Activo eliminado de la Bóveda Patrimonial', 'success');
+    renderApp();
+    return;
+  }
+
+  if (action === 'preset-patrimony-btc') {
+    const nowISO = new Date().toISOString();
+    if (!Array.isArray(appState.patrimonyItems)) appState.patrimonyItems = [];
+    appState.patrimonyItems.push({
+      id: `pat_btc_${Date.now()}`,
+      name: 'Bitcoin (BTC) — Reserva Largo Plazo',
+      amountCLP: 5000000,
+      category: 'crypto_hold',
+      institution: 'Binance',
+      owner: 'el',
+      note: 'Hold intocable a largo plazo — 100% fuera del presupuesto mensual',
+      createdAt: nowISO,
+      updatedAt: nowISO
+    });
+    isAddingPatrimonyItem = false;
+    editingPatrimonyId = null;
+    saveState(appState);
+    showToast('₿ Bitcoin en Binance ($5.000.000) agregado a tu Bóveda Intocable', 'success');
     renderApp();
     return;
   }
@@ -3336,28 +3758,72 @@ document.addEventListener('click', async (e) => {
 
   if (action === 'delete-tx') {
     const id = btn.dataset.id;
-    const found = (appState.transactions || []).find((t) => t.id === id);
+    const allTxs = appState.transactions || [];
+    const found = allTxs.find((t) => t.id === id);
     if (!found) return;
-    lastDeletedTx = { ...found };
+
+    const nowISO = new Date().toISOString();
     if (!appState.deletedTransactionIds) appState.deletedTransactionIds = {};
-    appState.deletedTransactionIds[id] = new Date().toISOString();
-    appState.transactions = (appState.transactions || []).filter((t) => t.id !== id);
+
+    const instGroupId = found.installmentGroupId || null;
+    const splitGrpId = found.splitGroupId || found.receiptGroupId || null;
+
+    let batchToDelete = [found];
+    let toastMsg = '🗑️ Movimiento eliminado';
+
+    if (instGroupId) {
+      const siblings = allTxs.filter((t) => t.installmentGroupId === instGroupId);
+      if (siblings.length > 1) {
+        batchToDelete = siblings;
+        toastMsg = `🗑️ Compra en cuotas (${siblings.length} cuotas) eliminada completa`;
+      }
+    } else if (splitGrpId) {
+      const siblings = allTxs.filter((t) => (t.splitGroupId || t.receiptGroupId) === splitGrpId);
+      if (siblings.length > 1) {
+        batchToDelete = siblings;
+        toastMsg = `🗑️ Boleta dividida (${siblings.length} partes) eliminada completa`;
+      }
+    }
+
+    lastDeletedBatch = batchToDelete.map((t) => ({ ...t }));
+    lastDeletedTx = lastDeletedBatch[0] || null;
+
+    const deletedIdsSet = new Set(batchToDelete.map((t) => t.id));
+    batchToDelete.forEach((t) => {
+      appState.deletedTransactionIds[t.id] = nowISO;
+    });
+    appState.transactions = allTxs.filter((t) => !deletedIdsSet.has(t.id));
+
     saveState(appState);
-    showToast('🗑️ Movimiento eliminado', 'success', 'undo-delete-tx');
+    showToast(toastMsg, 'success', 'undo-delete-tx');
     renderApp();
     return;
   }
 
   if (action === 'undo-delete-tx') {
-    if (!lastDeletedTx) return;
-    if (appState.deletedTransactionIds) {
-      delete appState.deletedTransactionIds[lastDeletedTx.id];
-    }
-    lastDeletedTx.updatedAt = new Date().toISOString();
-    appState.transactions.push(lastDeletedTx);
+    const batch = Array.isArray(lastDeletedBatch) && lastDeletedBatch.length > 0
+      ? lastDeletedBatch
+      : lastDeletedTx
+        ? [lastDeletedTx]
+        : [];
+    if (batch.length === 0) return;
+
+    const nowISO = new Date().toISOString();
+    batch.forEach((item) => {
+      if (appState.deletedTransactionIds) {
+        delete appState.deletedTransactionIds[item.id];
+      }
+      item.updatedAt = nowISO;
+      appState.transactions.push(item);
+    });
+    const restoredCount = batch.length;
     lastDeletedTx = null;
+    lastDeletedBatch = null;
     saveState(appState);
-    showToast('↩️ Movimiento restaurado', 'success');
+    showToast(
+      restoredCount > 1 ? `↩️ ${restoredCount} movimientos vinculados restaurados` : '↩️ Movimiento restaurado',
+      'success'
+    );
     renderApp();
     return;
   }
@@ -3413,7 +3879,8 @@ document.addEventListener('click', async (e) => {
       monthTxs,
       appState.familyConfig?.wifeName,
       appState.transactions,
-      appState.learnedContacts || {}
+      appState.learnedContacts || {},
+      appState.fixedTemplates || []
     );
     reconcileState.filterTab = 'review';
     showToast('🔍 Cartola ejemplo analizada: revisa la pestaña "Por Confirmar"', 'success');
@@ -3442,7 +3909,8 @@ document.addEventListener('click', async (e) => {
       monthTxs,
       appState.familyConfig?.wifeName,
       appState.transactions,
-      appState.learnedContacts || {}
+      appState.learnedContacts || {},
+      appState.fixedTemplates || []
     );
     const needReview = reconcileState.analyzedRows.filter(
       (r) => r.status === 'forgotten_new' || r.status === 'incoming_abono'
@@ -3522,7 +3990,8 @@ document.addEventListener('click', async (e) => {
             appState.learnedContacts[contactKey] = {
               flow: 'in',
               abonoAction: row.abonoAction,
-              reimburseCategoryId: row.reimburseCategoryId || 'supermercado'
+              reimburseCategoryId: row.reimburseCategoryId || 'supermercado',
+              updatedAt: nowISO
             };
           }
           if (row.abonoAction === 'reimburse') {
@@ -3580,7 +4049,8 @@ document.addEventListener('click', async (e) => {
           if (contactKey) {
             appState.learnedContacts[contactKey] = {
               flow: 'out',
-              suggestedCategoryId: row.suggestedCategoryId || 'imprevistos'
+              suggestedCategoryId: row.suggestedCategoryId || 'imprevistos',
+              updatedAt: nowISO
             };
           }
           if (row.suggestedCategoryId === '__loan_repaid__') {
@@ -3614,7 +4084,7 @@ document.addEventListener('click', async (e) => {
               updatedAt: nowISO
             });
           } else {
-            appState.transactions.push({
+            const newExpenseTx = {
               id: `tx_rec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
               bankFingerprint: row.fingerprint,
               date: row.date,
@@ -3627,7 +4097,11 @@ document.addEventListener('click', async (e) => {
               reconciled: true,
               createdAt: nowISO,
               updatedAt: nowISO
-            });
+            };
+            if (row.suggestedFixedTemplateId) {
+              newExpenseTx.fixedTemplateId = row.suggestedFixedTemplateId;
+            }
+            appState.transactions.push(newExpenseTx);
           }
           importedCount++;
         }
@@ -3649,6 +4123,32 @@ document.addEventListener('click', async (e) => {
   if (action === 'export-excel') {
     exportStateToExcel(appState, activeYearMonth);
     showToast('📊 Archivo Excel (.xlsx) descargado', 'success');
+    return;
+  }
+
+  if (action === 'export-json-backup') {
+    const jsonStr = exportStateToJsonString(appState);
+    const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Finanzas_Familiar_Respaldo_${getTodayISO()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 200);
+    showToast('💾 Respaldo JSON completo descargado', 'success');
+    return;
+  }
+
+  if (action === 'trigger-import-json-backup') {
+    const inp = document.getElementById('import-json-backup-input');
+    if (inp) {
+      inp.value = '';
+      inp.click();
+    }
     return;
   }
 
@@ -3808,6 +4308,19 @@ document.addEventListener('click', async (e) => {
   }
 });
 
+// Escuchar fusiones asíncronas completadas tras saveState() o pushStateToGoogleSheets()
+window.addEventListener('finanzas:state-merged', (ev) => {
+  if (ev?.detail?.state) {
+    appState = ev.detail.state;
+    userPrefs = loadUserPrefs();
+    if (!isUserTyping()) {
+      renderApp();
+    } else {
+      pendingSyncRender = true;
+    }
+  }
+});
+
 // Si hubo una sincronización en segundo plano mientras el usuario escribía, aplicarla al salir del input
 document.addEventListener('focusout', () => {
   setTimeout(() => {
@@ -3855,12 +4368,24 @@ async function runBackgroundSync(forceRenderOnFirstLoad = false) {
   }
 }
 
-// Inicializar y activar sincronización inteligente (WiFi local + Google Sheets 4G/5G entre ciudades)
+// Inicializar y activar sincronización inteligente (WiFi local + Google Sheets 4G/5G entre ciudades + reconexión online)
 window.addEventListener('DOMContentLoaded', async () => {
   applyTheme(userPrefs.theme);
   quickForm.paymentMethod = userPrefs.defaultPaymentMethod || 'cmr_falabella';
   renderApp();
   await runBackgroundSync(true);
+
+  setupAutoOnlineSync((res) => {
+    if (res?.state && res.changed) {
+      appState = res.state;
+      userPrefs = loadUserPrefs();
+      if (!isUserTyping()) {
+        renderApp();
+      } else {
+        pendingSyncRender = true;
+      }
+    }
+  });
 
   setInterval(() => {
     if (document.hidden) return;

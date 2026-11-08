@@ -414,6 +414,7 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
 
   const parsedRows = [];
   let headerMap = null;
+  const intraStatementFpCounts = {};
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -465,6 +466,10 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
         const flow = isIncomingDesc ? 'in' : 'out';
         const cleanDesc = rawDesc.replace(/^PAGO:\s*/i, '').trim() || rawDesc;
         if (amount > 0 && cleanDesc) {
+          const baseFp = buildBankFingerprint(dateISO, amount, cleanDesc, flow);
+          intraStatementFpCounts[baseFp] = (intraStatementFpCounts[baseFp] || 0) + 1;
+          const occurrenceIndex = intraStatementFpCounts[baseFp];
+          const fingerprint = occurrenceIndex > 1 ? `${baseFp}_occ${occurrenceIndex}` : baseFp;
           parsedRows.push({
             rowId: `stmt_${i}_${Date.now()}`,
             date: dateISO,
@@ -473,7 +478,8 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
             normalizedMerchant: normalizeBankDescription(cleanDesc),
             amount,
             flow,
-            fingerprint: buildBankFingerprint(dateISO, amount, cleanDesc, flow),
+            fingerprint,
+            occurrenceIndex,
             paymentMethod: effectiveDefaultMethod,
             sourceLabel: 'Cartola'
           });
@@ -578,6 +584,10 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
 
     if (amount > 0) {
       const cleanDesc = rawDescription.replace(/^PAGO:\s*/i, '').trim() || rawDescription;
+      const baseFp = buildBankFingerprint(dateISO, amount, cleanDesc, flow);
+      intraStatementFpCounts[baseFp] = (intraStatementFpCounts[baseFp] || 0) + 1;
+      const occurrenceIndex = intraStatementFpCounts[baseFp];
+      const fingerprint = occurrenceIndex > 1 ? `${baseFp}_occ${occurrenceIndex}` : baseFp;
       parsedRows.push({
         rowId: `stmt_${i}_${Date.now()}`,
         date: dateISO,
@@ -586,7 +596,8 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
         normalizedMerchant: normalizeBankDescription(cleanDesc),
         amount,
         flow,
-        fingerprint: buildBankFingerprint(dateISO, amount, cleanDesc, flow),
+        fingerprint,
+        occurrenceIndex,
         paymentMethod: guessPaymentMethodFromSource(sourceLabel || cleanDesc, effectiveDefaultMethod),
         sourceLabel: sourceLabel || 'Cartola'
       });
@@ -1060,12 +1071,49 @@ export function applyReconciliationToTransactions(analyzedRows, transactions = [
   return transactions;
 }
 
+/**
+ * Detecta si una glosa de cartola corresponde a una plantilla de Cuenta Fija mensual
+ * (Arriendo, Gastos Comunes, Luz, Agua, Gas, Internet o plantillas personalizadas).
+ */
+export function matchFixedTemplateFromStatementRow(row, fixedTemplates = []) {
+  if (!row || row.flow !== 'out' || !Array.isArray(fixedTemplates) || fixedTemplates.length === 0) {
+    return null;
+  }
+  const lower = stripAccents(String(`${row.rawDescription || ''} ${row.description || ''}`).toLowerCase());
+
+  const templateRuleKeywords = {
+    fix_arriendo: ['arriendo', 'dividendo', 'hipotecario', 'inmobiliaria', 'corredora'],
+    fix_gGCC: ['gasto comun', 'gastos comunes', 'ggcc', 'comunidad feliz', 'comunidadfeliz', 'edifito', 'kastor', 'condominio', 'administracion edificio'],
+    fix_luz: ['enel', 'cge', 'chilquinta', 'saesa', 'frontel', 'codiner', 'cuenta luz', 'electricidad'],
+    fix_agua: ['aguas andinas', 'aguas cordillera', 'aguas manantiales', 'esval', 'essbio', 'essal', 'nuevosur', 'aguas del valle', 'sacyr agua', 'cuenta agua'],
+    fix_gas: ['metrogas', 'lipigas', 'abastible', 'gasco', 'gas sur', 'intergas', 'cuenta gas'],
+    fix_internet: ['movistar', 'entel', 'wom', 'vtr', 'claro', 'gtd', 'telsur', 'mundo pacifico', 'mundo telecom', 'starlink', 'internet hogar', 'fibra optica']
+  };
+
+  for (const tpl of fixedTemplates) {
+    if (!tpl || !tpl.id) continue;
+    const ruleKws = templateRuleKeywords[tpl.id] || [];
+    if (ruleKws.some((kw) => matchKeywordInText(lower, kw))) {
+      return tpl;
+    }
+    const cleanTplName = stripAccents(String(tpl.name || '').toLowerCase())
+      .replace(/\([^)]*\)/g, '')
+      .trim();
+    if (cleanTplName.length >= 5 && lower.includes(cleanTplName)) {
+      return tpl;
+    }
+  }
+
+  return null;
+}
+
 export function reconcileStatementRows(
   statementRows,
   existingTransactions = [],
   wifeName = 'Marie',
   allHistoricalTransactions = null,
-  learnedContacts = {}
+  learnedContacts = {},
+  fixedTemplates = []
 ) {
   if (!Array.isArray(statementRows)) return [];
 
@@ -1078,6 +1126,8 @@ export function reconcileStatementRows(
 
   const usedTxIds = new Set();
   const usedGroupIds = new Set();
+  const claimedFixedTemplateMonthKeys = new Set();
+  const intraBatchBaseFpCounts = {};
 
   // Agrupar compras divididas explícitas (soportando tanto `receiptGroupId` como `splitGroupId`)
   const receiptGroups = {};
@@ -1101,23 +1151,33 @@ export function reconcileStatementRows(
     const flow = rawRow.flow || (isIncomingStatementDescription(rawRow.description) ? 'in' : 'out');
     const amount = cleanChileanAmount(rawRow.amount);
     const date = isValidStatementDate(rawRow.date) ? normalizeDateToISO(rawRow.date) : rawRow.date;
-    const fingerprint =
+    const baseFp = buildBankFingerprint(date, amount, rawRow.description, flow);
+    intraBatchBaseFpCounts[baseFp] = (intraBatchBaseFpCounts[baseFp] || 0) + 1;
+    const occurrenceIndex = Number(rawRow.occurrenceIndex || intraBatchBaseFpCounts[baseFp] || 1);
+
+    let fingerprint =
       rawRow.fingerprint ||
       rawRow.bankFingerprint ||
-      buildBankFingerprint(date, amount, rawRow.description, flow);
-    const altFingerprint = buildBankFingerprint(
+      (occurrenceIndex > 1 ? `${baseFp}_occ${occurrenceIndex}` : baseFp);
+    if (occurrenceIndex > 1 && !/_occ\d+$/.test(fingerprint)) {
+      fingerprint = `${fingerprint}_occ${occurrenceIndex}`;
+    }
+
+    const baseAltFp = buildBankFingerprint(
       date,
       amount,
       normalizeBankDescription(rawRow.description),
       flow
     );
+    const altFingerprint = occurrenceIndex > 1 ? `${baseAltFp}_occ${occurrenceIndex}` : baseAltFp;
 
     const row = {
       ...rawRow,
       date,
       amount,
       flow,
-      fingerprint
+      fingerprint,
+      occurrenceIndex
     };
 
     // 0. BLINDAJE CONTRA DOBLE SUBIDA DE CARTOLA (Huella Digital Exacta)
@@ -1317,16 +1377,74 @@ export function reconcileStatementRows(
       };
     }
 
+    // 3.5. Buscar coincidencia o vinculación automática con Cuenta Fija mensual (Arriendo, GGCC, Luz, Agua, Gas, Internet)
+    const matchedFixedTemplate = matchFixedTemplateFromStatementRow(row, fixedTemplates);
+    const rowYearMonth = String(row.date || '').slice(0, 7);
+    if (matchedFixedTemplate && rowYearMonth) {
+      const existingFixedTx = allTxs.find(
+        (tx) =>
+          !usedTxIds.has(tx.id) &&
+          tx.type === 'expense' &&
+          tx.fixedTemplateId === matchedFixedTemplate.id &&
+          String(tx.date || '').slice(0, 7) === rowYearMonth &&
+          Math.abs(Number(tx.amount) - row.amount) <= Math.max(15000, Math.round(row.amount * 0.25))
+      );
+
+      if (existingFixedTx) {
+        usedTxIds.add(existingFixedTx.id);
+        return {
+          ...row,
+          status: 'matched_duplicate',
+          reconciliationStatus: 'already_registered',
+          matchedTx: existingFixedTx,
+          matchedTransactions: [existingFixedTx],
+          matchReason: `Coincide con cuenta fija "${matchedFixedTemplate.name}" ya confirmada este mes ($${Number(existingFixedTx.amount).toLocaleString('es-CL')})`,
+          suggestedCategoryId: existingFixedTx.categoryId || matchedFixedTemplate.categoryId,
+          suggestedFixedTemplateId: matchedFixedTemplate.id,
+          suggestedFixedTemplateName: matchedFixedTemplate.name,
+          selectedToImport: false
+        };
+      }
+    }
+
     // 4. Movimiento no registrado -> predecir categoría o préstamo con el Motor Contextual
     const smartOut = inferSmartContextForOutgoingCargo(row, allTxs, learnedContacts);
+    let suggestedFixedTemplateId = null;
+    let suggestedFixedTemplateName = null;
+    let suggestedCategoryId = smartOut.suggestedCategoryId;
+    let smartHint = smartOut.smartHint;
+
+    if (matchedFixedTemplate && rowYearMonth) {
+      const fixedMonthKey = `${matchedFixedTemplate.id}_${rowYearMonth}`;
+      const alreadyPaidInMonth = allTxs.some(
+        (tx) =>
+          tx.type === 'expense' &&
+          tx.fixedTemplateId === matchedFixedTemplate.id &&
+          String(tx.date || '').slice(0, 7) === rowYearMonth
+      );
+      if (!alreadyPaidInMonth && !claimedFixedTemplateMonthKeys.has(fixedMonthKey)) {
+        claimedFixedTemplateMonthKeys.add(fixedMonthKey);
+        suggestedFixedTemplateId = matchedFixedTemplate.id;
+        suggestedFixedTemplateName = matchedFixedTemplate.name;
+        suggestedCategoryId = matchedFixedTemplate.categoryId || suggestedCategoryId;
+        smartHint = `📌 Se vinculará automáticamente a tu cuenta fija "${matchedFixedTemplate.name}" en 🏠 Fijos.`;
+      }
+    }
+
+    if (occurrenceIndex > 1) {
+      smartHint = `🔁 Compra repetida #${occurrenceIndex} en el mismo día · ${smartHint}`;
+    }
+
     return {
       ...row,
       status: 'forgotten_new',
       reconciliationStatus: 'new_unregistered',
       matchedTx: null,
       matchedTransactions: [],
-      suggestedCategoryId: smartOut.suggestedCategoryId,
-      smartHint: smartOut.smartHint,
+      suggestedCategoryId,
+      suggestedFixedTemplateId,
+      suggestedFixedTemplateName,
+      smartHint,
       selectedToImport: true
     };
   });

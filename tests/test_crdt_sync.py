@@ -245,6 +245,128 @@ class TestCRDTMergeEngine(unittest.TestCase):
         self.assertEqual(tpl_map["fix_arriendo"]["estimatedAmount"], 595000)
         self.assertEqual(merged_ab["fixedTemplates"], merged_ba["fixedTemplates"])
 
+    def test_patrimony_vault_tombstones_and_family_config_merge(self):
+        """La Bóveda de Patrimonio (Cripto/Binance y Fondo de Emergencia) y familyConfig se fusionan por updatedAt y respetan tombstones."""
+        state_mac = {
+            "familyConfig": {
+                "coupleNames": "Mauricio & Marie",
+                "wifeName": "Marie",
+                "monthlyIncomeTarget": 2600000,
+                "monthlySavingsGoal": 350000,
+                "updatedAt": "2026-11-07T20:00:00Z",
+            },
+            "patrimonyItems": [
+                {
+                    "id": "pat_btc_binance",
+                    "name": "Bitcoin (BTC) — Reserva Largo Plazo",
+                    "amountCLP": 5000000,
+                    "category": "crypto_hold",
+                    "institution": "Binance",
+                    "owner": "el",
+                    "createdAt": "2026-11-07T18:00:00Z",
+                    "updatedAt": "2026-11-07T19:00:00Z",
+                },
+                {
+                    "id": "pat_old_dap",
+                    "name": "DAP Antiguo",
+                    "amountCLP": 800000,
+                    "category": "investment",
+                    "createdAt": "2026-10-01T10:00:00Z",
+                    "updatedAt": "2026-10-01T10:00:00Z",
+                },
+            ],
+            "deletedPatrimonyIds": {},
+            "transactions": [],
+            "demoCleared": True,
+            "lastUpdated": "2026-11-07T20:00:00Z",
+        }
+
+        state_iphone = {
+            "familyConfig": {
+                "coupleNames": "Mauricio & Marie",
+                "wifeName": "Marie",
+                "monthlyIncomeTarget": 2350000,
+                "monthlySavingsGoal": 250000,
+                "updatedAt": "2026-11-01T10:00:00Z",
+            },
+            "patrimonyItems": [
+                {
+                    "id": "pat_btc_binance",
+                    "name": "Bitcoin (BTC) — Reserva Largo Plazo",
+                    "amountCLP": 5250000,
+                    "category": "crypto_hold",
+                    "institution": "Binance",
+                    "owner": "el",
+                    "createdAt": "2026-11-07T18:00:00Z",
+                    "updatedAt": "2026-11-07T21:00:00Z",
+                },
+                {
+                    "id": "pat_emergency",
+                    "name": "Fondo de Emergencia Familiar",
+                    "amountCLP": 1500000,
+                    "category": "emergency_fund",
+                    "institution": "Banco de Chile",
+                    "owner": "ambos",
+                    "createdAt": "2026-11-07T21:05:00Z",
+                    "updatedAt": "2026-11-07T21:05:00Z",
+                },
+            ],
+            "deletedPatrimonyIds": {
+                "pat_old_dap": "2026-11-07T21:10:00Z",
+            },
+            "transactions": [],
+            "demoCleared": True,
+            "lastUpdated": "2026-11-07T21:10:00Z",
+        }
+
+        merged_ab = server.merge_family_states(state_mac, state_iphone)
+        merged_ba = server.merge_family_states(state_iphone, state_mac)
+
+        # familyConfig más reciente gana sin importar el orden
+        self.assertEqual(merged_ab["familyConfig"]["monthlyIncomeTarget"], 2600000)
+        self.assertEqual(merged_ab["familyConfig"]["monthlySavingsGoal"], 350000)
+        self.assertEqual(merged_ab["familyConfig"], merged_ba["familyConfig"])
+
+        # patrimonyItems respeta tombstones y se queda con el monto más reciente de BTC ($5.250.000)
+        pat_ids = [p["id"] for p in merged_ab["patrimonyItems"]]
+        self.assertNotIn("pat_old_dap", pat_ids)
+        self.assertCountEqual(pat_ids, ["pat_btc_binance", "pat_emergency"])
+        btc_item = next(p for p in merged_ab["patrimonyItems"] if p["id"] == "pat_btc_binance")
+        self.assertEqual(btc_item["amountCLP"], 5250000)
+        self.assertEqual(merged_ab["patrimonyItems"], merged_ba["patrimonyItems"])
+
+    def test_codebase_audit_invariants(self):
+        """Verifica que todos los hallazgos de la auditoría técnica estén corregidos en los módulos JS y Apps Script."""
+        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        with open(os.path.join(root_dir, "src", "app.js"), "r", encoding="utf-8") as f:
+            app_js = f.read()
+        self.assertNotIn("formatMonthLabel(", app_js)
+        self.assertIn("getMonthNameLabel(res.clonedFrom)", app_js)
+        self.assertIn("btn.dataset.msgKind || btn.dataset.msgType", app_js)
+        self.assertIn("finanzas:state-merged", app_js)
+        self.assertIn("setupAutoOnlineSync(", app_js)
+        self.assertIn("renderPatrimonyVaultSection(", app_js)
+        self.assertIn("preset-patrimony-btc", app_js)
+        self.assertIn("export-json-backup", app_js)
+
+        with open(os.path.join(root_dir, "src", "services", "storage.js"), "r", encoding="utf-8") as f:
+            storage_js = f.read()
+        self.assertIn("deletedPatrimonyIds", storage_js)
+        self.assertIn("patrimonyItems", storage_js)
+        self.assertIn("exportStateToJsonString", storage_js)
+        self.assertIn("importStateFromJsonString", storage_js)
+
+        with open(os.path.join(root_dir, "src", "services", "reconciler.js"), "r", encoding="utf-8") as f:
+            reconciler_js = f.read()
+        self.assertIn("matchFixedTemplateFromStatementRow", reconciler_js)
+        self.assertIn("_occ", reconciler_js)
+
+        with open(os.path.join(root_dir, "google-sheets-sync", "Code.gs"), "r", encoding="utf-8") as f:
+            code_gs = f.read()
+        self.assertIn("deletedPatrimonyIds", code_gs)
+        self.assertIn("patrimonyItems", code_gs)
+
 
 class TestFinanzasHTTPServer(unittest.TestCase):
     def setUp(self):

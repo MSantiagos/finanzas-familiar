@@ -178,6 +178,49 @@ def merge_family_states(existing, incoming):
 
     merged_templates = sorted(tpl_by_id.values(), key=_fixed_template_sort_key)
 
+    # 6b. Fusionar Bóveda de Patrimonio Intocable (patrimonyItems + deletedPatrimonyIds)
+    deleted_patrimony = dict(existing.get("deletedPatrimonyIds") or {})
+    for p_id, del_ts in (incoming.get("deletedPatrimonyIds") or {}).items():
+        prev_ts = str(deleted_patrimony.get(p_id, "") or "")
+        if not prev_ts or str(del_ts) >= prev_ts:
+            deleted_patrimony[p_id] = del_ts
+
+    pat_by_id = {}
+    for item in (existing.get("patrimonyItems") or []) + (incoming.get("patrimonyItems") or []):
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        pid = item["id"]
+        if pid in deleted_patrimony:
+            continue
+        if pid not in pat_by_id:
+            pat_by_id[pid] = dict(item)
+        else:
+            prev_u = str(pat_by_id[pid].get("updatedAt") or pat_by_id[pid].get("createdAt") or "")
+            new_u = str(item.get("updatedAt") or item.get("createdAt") or "")
+            if new_u >= prev_u:
+                merged_item = dict(pat_by_id[pid])
+                merged_item.update(item)
+                pat_by_id[pid] = merged_item
+
+    merged_patrimony = sorted(
+        pat_by_id.values(),
+        key=lambda x: (-float(x.get("amount") or 0), str(x.get("id") or "")),
+    )
+
+    # 6c. Fusionar familyConfig por updatedAt
+    existing_fc = existing.get("familyConfig") if isinstance(existing.get("familyConfig"), dict) else None
+    incoming_fc = incoming.get("familyConfig") if isinstance(incoming.get("familyConfig"), dict) else None
+    merged_fc = incoming_fc or existing_fc
+    if existing_fc and incoming_fc:
+        fc_u_exist = str(existing_fc.get("updatedAt") or "")
+        fc_u_inc = str(incoming_fc.get("updatedAt") or "")
+        if fc_u_exist and fc_u_inc:
+            merged_fc = incoming_fc if fc_u_inc >= fc_u_exist else existing_fc
+        elif fc_u_exist and not fc_u_inc:
+            merged_fc = existing_fc
+        else:
+            merged_fc = incoming_fc
+
     # 7. Fusionar integraciones compartidas conservando claves no vacías
     shared_integrations = {
         "googleSheetsWebhookUrl": "",
@@ -205,12 +248,14 @@ def merge_family_states(existing, incoming):
     merged.update(
         {
             "version": 3,
-            "familyConfig": incoming.get("familyConfig") or existing.get("familyConfig"),
+            "familyConfig": merged_fc,
             "categories": incoming.get("categories") or existing.get("categories"),
             "monthlyBudgets": monthly_budgets,
             "fixedTemplates": merged_templates,
             "transactions": merged_txs,
             "deletedTransactionIds": deleted_map,
+            "patrimonyItems": merged_patrimony,
+            "deletedPatrimonyIds": deleted_patrimony,
             "learnedContacts": learned_contacts,
             "sharedIntegrations": shared_integrations,
             "demoCleared": demo_cleared,
@@ -354,8 +399,10 @@ class FinanzasHandler(SimpleHTTPRequestHandler):
                 with STATE_LOCK:
                     existing_payload, _ = _read_disk_state()
                     merged_payload = merge_family_states(existing_payload, incoming_payload)
-                    with open(STATE_FILE, "w", encoding="utf-8") as f:
+                    tmp_file = f"{STATE_FILE}.tmp.{os.getpid()}.{threading.get_ident()}"
+                    with open(tmp_file, "w", encoding="utf-8") as f:
                         json.dump(merged_payload, f, ensure_ascii=False, indent=2)
+                    os.replace(tmp_file, STATE_FILE)
 
                 self._send_json(
                     200,
