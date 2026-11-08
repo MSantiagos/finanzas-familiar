@@ -1430,6 +1430,7 @@ function updateFilteredTransactionsDOM() {
 
 function renderRecentTransactionsList(metrics) {
   const monthTxs = metrics.txs || [];
+  const totalAllMonthsCount = (appState.transactions || []).length;
   const filteredTxs = filterTransactions(monthTxs, {
     ...txFilterState,
     yearMonth: activeYearMonth,
@@ -1443,6 +1444,16 @@ function renderRecentTransactionsList(metrics) {
           <h2 class="section-title">📋 Movimientos de ${getMonthNameLabel(activeYearMonth)} (${monthTxs.length})</h2>
           <p class="section-subtitle">Busca al instante o toca cualquier movimiento para editarlo en 1 segundo</p>
         </div>
+        ${totalAllMonthsCount > 0 ? `
+          <button
+            type="button"
+            class="btn-outline-danger-sm"
+            data-action="clear-all-transactions"
+            title="Borra todos los movimientos de prueba (incluyendo meses anteriores) en todos tus dispositivos"
+          >
+            🧹 Vaciar Todo y Dejar en $0 (${totalAllMonthsCount})
+          </button>
+        ` : ''}
       </div>
 
       <!-- Barra de Búsqueda Instantánea y Filtros Rápidos (Mejora 3) -->
@@ -3350,16 +3361,25 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
-  if (action === 'clear-demo-data') {
+  if (action === 'clear-demo-data' || action === 'clear-all-transactions') {
+    const allTxs = appState.transactions || [];
+    if (allTxs.length > 0) {
+      lastDeletedBatch = allTxs.map((t) => ({ ...t }));
+      lastDeletedTx = lastDeletedBatch[0] || null;
+    }
     if (!appState.deletedTransactionIds) appState.deletedTransactionIds = {};
     const nowISO = new Date().toISOString();
-    (appState.transactions || []).forEach((t) => {
-      if (t.isDemo) appState.deletedTransactionIds[t.id] = nowISO;
+    allTxs.forEach((t) => {
+      if (t && t.id) appState.deletedTransactionIds[t.id] = nowISO;
     });
-    appState.transactions = (appState.transactions || []).filter((t) => !t.isDemo);
+    appState.transactions = [];
     appState.demoCleared = true;
     saveState(appState);
-    showToast('🧹 Datos de ejemplo borrados en todos tus dispositivos.', 'success');
+    showToast(
+      '🧹 Todos los movimientos de prueba fueron borrados (Historial en $0 en todos tus dispositivos)',
+      'success',
+      lastDeletedBatch && lastDeletedBatch.length > 0 ? 'undo-delete-tx' : null
+    );
     renderApp();
     return;
   }
