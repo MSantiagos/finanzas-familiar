@@ -1,7 +1,7 @@
 import {
   PAYMENT_METHODS,
   SAMPLE_BANK_STATEMENT_TEXT
-} from './data/defaults.js?v=20';
+} from './data/defaults.js?v=21';
 import {
   loadState,
   saveState,
@@ -17,7 +17,7 @@ import {
   setupAutoOnlineSync,
   exportStateToJsonString,
   importStateFromJsonString
-} from './services/storage.js?v=20';
+} from './services/storage.js?v=21';
 import {
   parseBankStatementText,
   reconcileStatementRows,
@@ -25,19 +25,19 @@ import {
   formatLiveCLPInput,
   normalizeContactKey,
   extractContactDisplayName
-} from './services/reconciler.js?v=20';
+} from './services/reconciler.js?v=21';
 import {
   scanReceiptWithGemini,
   classifyStatementRowsWithGemini,
   getDemoScannedReceipt,
   generateMonthlyFamilyAuditWithGemini
-} from './services/geminiScanner.js?v=20';
-import { exportStateToExcel } from './services/excelExport.js?v=20';
+} from './services/geminiScanner.js?v=21';
+import { exportStateToExcel } from './services/excelExport.js?v=21';
 import {
   parseQuickNaturalExpense,
   buildInstallmentTransactions,
   getQuickPresetsForAuthor
-} from './services/smartInput.js?v=20';
+} from './services/smartInput.js?v=21';
 import {
   resolveTxBudgetMonth,
   calculateMonthlyFinancialSummary,
@@ -54,7 +54,7 @@ import {
   getAnnualSubscriptionsForMonth,
   applyDynamicAnnualSubscriptionsToMonthBudget,
   buildCoupleWhatsAppMessages
-} from './domain/financialEngine.js?v=20';
+} from './domain/financialEngine.js?v=21';
 
 // Estado global en memoria de la aplicación
 let appState = loadState();
@@ -2820,6 +2820,94 @@ function renderFixedTab(metrics) {
 // ============================================================================
 // PESTAÑA 4: CONCILIADOR CON FILTROS INTELIGENTES PARA MARIE Y MAURICIO
 // ============================================================================
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderReconcileRowDetailDrawer(row) {
+  if (!row || !row.showDetail) return '';
+  const pmObj = PAYMENT_METHODS.find((p) => p.id === row.paymentMethod);
+  const pmName = pmObj ? `${pmObj.icon} ${pmObj.name}` : row.paymentMethod || 'Banco / Tarjeta';
+  const accountLabel = row.accountNumber ? `${pmName} (${row.accountNumber})` : pmName;
+  const cleanMerchantQuery = String(row.rawDescription || row.description || '')
+    .replace(/^(COMPRA|PAGO EN|TRASPASO A:|TRASPASO DE:)\s*/i, '')
+    .replace(/\(Cuota.*?\)/gi, '')
+    .trim();
+  const googleSearchUrl = `https://www.google.com/search?q=${encodeURIComponent(`${cleanMerchantQuery} Chile comercio`)}`;
+
+  return `
+    <div class="rec-row-detail-drawer" style="margin-top:8px;padding:10px 12px;border-radius:10px;background:rgba(15,23,42,0.05);border:1px solid var(--border-subtle);font-size:0.78rem;line-height:1.45;display:flex;flex-direction:column;gap:6px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+        <strong style="color:var(--text-primary);font-size:0.8rem;">🔎 Ficha Completa en Cartola Bancaria</strong>
+        ${cleanMerchantQuery ? `
+          <a href="${googleSearchUrl}" target="_blank" rel="noopener noreferrer" style="font-size:0.73rem;font-weight:700;color:var(--accent-primary);text-decoration:none;">
+            🌐 Buscar "${escapeHtml(cleanMerchantQuery)}" en Google ↗
+          </a>
+        ` : ''}
+      </div>
+      ${row.glosaExplanation ? `
+        <div style="padding:6px 9px;border-radius:8px;background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.25);color:var(--text-primary);">
+          💡 <strong>Traducción glosa bancaria:</strong> ${escapeHtml(row.glosaExplanation)}
+        </div>
+      ` : ''}
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:6px 12px;">
+        <div><span class="text-muted">Glosa original:</span> <strong>${escapeHtml(row.rawDescription || row.description)}</strong></div>
+        <div><span class="text-muted">Cuenta / Tarjeta:</span> <strong>${escapeHtml(accountLabel)}</strong></div>
+        <div><span class="text-muted">Canal / Sucursal / Titular:</span> <strong>${escapeHtml(row.channelOrBranch || 'No especificado en archivo')}</strong></div>
+        ${row.balanceAfter !== null && row.balanceAfter !== undefined ? `
+          <div><span class="text-muted">Saldo en cuenta tras cargo:</span> <strong>${formatCLP(row.balanceAfter)}</strong></div>
+        ` : ''}
+        ${row.originalTotalAmount && row.originalTotalAmount !== row.amount ? `
+          <div><span class="text-muted">Monto compra total:</span> <strong>${formatCLP(row.originalTotalAmount)} (${escapeHtml(row.rawInstallmentInfo || 'Cuotas')})</strong></div>
+        ` : ''}
+      </div>
+      ${(row.neighborBefore || row.neighborAfter) ? `
+        <div style="margin-top:2px;padding-top:6px;border-top:1px dashed var(--border-subtle);color:var(--text-secondary);font-size:0.74rem;">
+          <strong>🧭 Contexto cronológico en la misma cartola (para recordar dónde estabas):</strong>
+          <div style="display:flex;flex-direction:column;gap:2px;margin-top:3px;">
+            ${row.neighborBefore ? `
+              <span>⬆️ <em>Movimiento contiguo en cartola (${row.neighborBefore.date}):</em> ${escapeHtml(row.neighborBefore.description)} (${row.neighborBefore.flow === 'in' ? '+' : '-'}${formatCLP(row.neighborBefore.amount)})</span>
+            ` : ''}
+            ${row.neighborAfter ? `
+              <span>⬇️ <em>Movimiento contiguo en cartola (${row.neighborAfter.date}):</em> ${escapeHtml(row.neighborAfter.description)} (${row.neighborAfter.flow === 'in' ? '+' : '-'}${formatCLP(row.neighborAfter.amount)})</span>
+            ` : ''}
+          </div>
+        </div>
+      ` : ''}
+      ${row.rawLineText ? `
+        <div style="font-size:0.7rem;color:var(--text-muted);font-family:monospace;word-break:break-all;opacity:0.85;">
+          📄 Línea cruda cartola: ${escapeHtml(row.rawLineText)}
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderReconcileRowTitleWithDetailBtn(row, idx) {
+  const acctBadge = row.accountNumber
+    ? `<span style="font-size:0.68rem;padding:1px 6px;border-radius:6px;background:rgba(148,163,184,0.15);color:var(--text-secondary);font-weight:600;">🏦 ${escapeHtml(row.accountNumber)}</span>`
+    : '';
+  return `
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+      <strong>${escapeHtml(row.description)}</strong>
+      ${acctBadge}
+      <button
+        type="button"
+        class="chip-btn"
+        data-action="toggle-rec-row-detail"
+        data-idx="${idx}"
+        style="padding:2px 7px;font-size:0.7rem;line-height:1.15;border-radius:6px;"
+        title="Ver todos los detalles disponibles en la cartola para este movimiento"
+      >${row.showDetail ? '🔼 Ocultar detalle' : 'ℹ️ Detalle'}</button>
+    </div>
+  `;
+}
+
 function renderReconcileTab() {
   const categories = appState.categories || [];
   const analyzed = reconcileState.analyzedRows;
@@ -2947,8 +3035,9 @@ function renderReconcileTab() {
                     <div class="rec-row rec-row-matched">
                       <div class="rec-row-left">
                         <span class="rec-status-pill pill-matched">✅ YA REGISTRADO (NO SE DUPLICA)</span>
-                        <strong>${row.description}</strong>
+                        ${renderReconcileRowTitleWithDetailBtn(row, idx)}
                         <small>📅 ${row.date} • ${row.matchReason}</small>
+                        ${renderReconcileRowDetailDrawer(row)}
                       </div>
                       <div class="rec-row-right">
                         <strong class="rec-amount">${formatCLP(row.amount)}</strong>
@@ -2975,8 +3064,9 @@ function renderReconcileTab() {
                     <div class="rec-row rec-row-internal">
                       <div class="rec-row-left">
                         <span class="rec-status-pill pill-internal">${badgeTitle}</span>
-                        <strong>${row.description}</strong>
+                        ${renderReconcileRowTitleWithDetailBtn(row, idx)}
                         <small>📅 ${row.date} • ${subText}</small>
+                        ${renderReconcileRowDetailDrawer(row)}
                       </div>
                       <div class="rec-row-controls">
                         <select class="text-input rec-internal-type-select" data-idx="${idx}" style="width:auto;">
@@ -3012,8 +3102,9 @@ function renderReconcileTab() {
                     <div class="rec-row rec-row-incoming">
                       <div class="rec-row-left">
                         <span class="rec-status-pill pill-matched">${pillText}</span>
-                        <strong>${row.description}</strong>
-                        <small>📅 ${row.date}${row.isLatePrevMonthSalary ? ` (Se imputará a ${getMonthNameLabel(activeYearMonth)})` : ''} • ${row.smartHint || ''}</small>
+                        ${renderReconcileRowTitleWithDetailBtn(row, idx)}
+                        <small>📅 ${row.date}${row.isLatePrevMonthSalary ? ` (Se imputará a ${getMonthNameLabel(activeYearMonth)})` : ''} • ${row.smartHint || ''}${row.glosaExplanation ? ` • 💡 ${escapeHtml(row.glosaExplanation)}` : ''}</small>
+                        ${renderReconcileRowDetailDrawer(row)}
                       </div>
                       <div class="rec-row-controls" style="flex-wrap:wrap;gap:8px;">
                         <select class="text-input rec-abono-action-select" data-idx="${idx}" style="width:auto;">
@@ -3078,8 +3169,9 @@ function renderReconcileTab() {
                   <div class="rec-row rec-row-forgotten">
                     <div class="rec-row-left">
                       <span class="rec-status-pill pill-forgotten">🚨 CARGO NO REGISTRADO (-${formatCLP(row.amount)})</span>
-                      <strong>${row.description}</strong>
-                      <small>📅 ${row.date} • ${row.smartHint || ''}</small>
+                      ${renderReconcileRowTitleWithDetailBtn(row, idx)}
+                      <small>📅 ${row.date} • ${row.smartHint || ''}${row.glosaExplanation ? ` • 💡 ${escapeHtml(row.glosaExplanation)}` : ''}</small>
+                      ${renderReconcileRowDetailDrawer(row)}
                     </div>
                     <div class="rec-row-controls">
                       <select class="text-input rec-cat-select" data-idx="${idx}" style="width:auto;">
@@ -4644,6 +4736,16 @@ document.addEventListener('click', async (e) => {
   if (action === 'set-rec-filter') {
     reconcileState.filterTab = btn.dataset.filter;
     renderApp();
+    return;
+  }
+
+  if (action === 'toggle-rec-row-detail') {
+    const idx = Number(btn.dataset.idx);
+    const row = reconcileState.analyzedRows?.[idx];
+    if (row) {
+      row.showDetail = !row.showDetail;
+      renderApp();
+    }
     return;
   }
 

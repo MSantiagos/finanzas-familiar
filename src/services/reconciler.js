@@ -419,6 +419,63 @@ function isInstallmentSpec(str) {
   return /^(?:cuota\s*)?0?\d{1,2}\s*(?:\/|de)\s*0?\d{1,2}$/i.test(String(str || '').trim());
 }
 
+/**
+ * Traduce glosas bancarias crípticas o abreviadas de Banco de Chile y CMR Falabella
+ * a una explicación clara en español para el usuario.
+ */
+export function explainBankGlosa(rawDesc, amount = 0, channel = '', accountNumber = '') {
+  const lower = stripAccents(String(rawDesc || '').toLowerCase().trim());
+  if (!lower) return '';
+
+  if (/cargo\s+segun\s+instruc/i.test(lower)) {
+    return amount <= 2500
+      ? 'Cobro automático o ajuste instruido al Banco de Chile (por el monto de $' +
+          Number(amount).toLocaleString('es-CL') +
+          ', suele corresponder a regularización de pasaje Red Movilidad / Bip! QR o comisión menor).'
+      : 'Cargo automático por instrucción permanente o mandato PAC registrado en Banco de Chile.';
+  }
+  if (/abono\s+segun\s+instruc/i.test(lower)) {
+    return 'Abono o reversa automática instruida al Banco de Chile (devolución de cobro, ajuste comercial o liquidación).';
+  }
+  if (/medio\s+de\s+pago\s+fintoc|fintoc/i.test(lower)) {
+    return 'Pago por transferencia electrónica instantánea vía Fintoc (usado por comercios online, apps de inversión como Fintual/Racional, pago de cuentas o recargas).';
+  }
+  if (/khipu\s+clbs|khipu/i.test(lower)) {
+    return 'Pago por transferencia vía pasarela Khipu (común en pago de gastos comunes, servicios básicos, seguros o comercios online).';
+  }
+  if (/recaudacion\s+y\s+pagos\s+de\s+servicios/i.test(lower)) {
+    return 'Pago de cuentas o servicios contratados a través del portal de pagos del Banco de Chile (ej. Arriendo, dividendo, luz, agua, gas o gastos comunes).';
+  }
+  if (/pago\s+en\s+sii\.cl/i.test(lower)) {
+    return 'Pago de impuestos en el Servicio de Impuestos Internos (SII.cl, ej. F29 IVA mensual, F50 o contribuciones).';
+  }
+  if (/tienda\s+ruki|ruki/i.test(lower)) {
+    return 'Compra presencial con tarjeta en comercio "Tienda Ruki" (minimarket / tienda de conveniencia o barrio).';
+  }
+  if (/rosetta\s+spa|rosetta/i.test(lower)) {
+    return 'Compra presencial con tarjeta en razón social "Rosetta SpA" (cafetería / panadería / local gastronómico).';
+  }
+  if (/^compra\s+algarrobo$|^algarrobo$/i.test(lower)) {
+    return 'Compra presencial en comercio local de Algarrobo (registrado el mismo día que Lider Express Algarrobo y Under Matta).';
+  }
+  if (/fudo\s*\*/i.test(lower)) {
+    return 'Restaurante o cafetería que utiliza el sistema de punto de venta gastronómico "Fudo".';
+  }
+  if (/merpago\*|mercadopago/i.test(lower)) {
+    return 'Comercio cobrado a través de maquinita o pasarela MercadoPago ("Merpago*").';
+  }
+  if (/payu\s*\*uber\s+trip|uber\s+rides/i.test(lower)) {
+    return 'Viaje en auto por aplicación Uber (cobrado vía PayU / Uber Rides).';
+  }
+  if (/traspaso\s+a:|transferencia\s+a:/i.test(lower)) {
+    return 'Transferencia electrónica enviada por internet. Nota: el archivo Excel del Banco de Chile solo incluye el nombre del destinatario, no el mensaje escrito en el correo.';
+  }
+  if (/traspaso\s+de:|transferencia\s+de:/i.test(lower)) {
+    return 'Transferencia electrónica recibida. Nota: el archivo Excel del Banco de Chile solo incluye el nombre de quien transfiere, no el comentario del correo.';
+  }
+  return 'Glosa comercial informada directamente por Transbank / Redcompra o el banco emisor.';
+}
+
 export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', defaultPaymentMethod = 'cmr_falabella') {
   if (!rawText || !String(rawText).trim()) return [];
   const lines = String(rawText)
@@ -436,6 +493,12 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
         ? 'bch_ctacte'
         : 'bch_vista'
       : defaultPaymentMethod;
+  let currentAccountNumber =
+    currentBlockMethod === 'bch_ctacte'
+      ? '00-138-06824-00'
+      : currentBlockMethod === 'bch_vista'
+        ? '00-000-44220-49'
+        : 'CMR Falabella';
 
   const parsedRows = [];
   let headerMap = null;
@@ -447,10 +510,13 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
     // Detectar cambio de cuenta si el usuario pegó o subió múltiples cartolas juntas
     if (/00-138-06824-00|001380682400/i.test(line) && /cuenta/i.test(line)) {
       currentBlockMethod = 'bch_ctacte';
+      currentAccountNumber = '00-138-06824-00';
     } else if (/00-000-44220-49|000004422049/i.test(line) && /cuenta/i.test(line)) {
       currentBlockMethod = 'bch_vista';
+      currentAccountNumber = '00-000-44220-49';
     } else if (/titular\/adicional|valor\s+cuota/i.test(line)) {
       currentBlockMethod = 'cmr_falabella';
+      currentAccountNumber = 'CMR Falabella';
     }
 
     let parts = line.includes(';')
@@ -476,11 +542,12 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
         valorCuotaIdx: lowerParts.findIndex((p) => /^valor\s*cuota/.test(p)),
         cuotasPendientesIdx: lowerParts.findIndex((p) => /cuotas?\s*pendientes?/.test(p)),
         saldoIdx: lowerParts.findIndex((p) => /^saldo/.test(p)),
-        origenIdx: lowerParts.findIndex((p) => /origen|cuenta|medio|tarjeta|canal|sucursal/.test(p)),
+        origenIdx: lowerParts.findIndex((p) => /origen|cuenta|medio|tarjeta|canal|sucursal|titular/.test(p)),
         cuotaIdx: lowerParts.findIndex((p) => /cuota/.test(p) && !/valor\s*cuota|cuotas?\s*pendientes?/.test(p))
       };
       if (headerMap.valorCuotaIdx >= 0) {
         currentBlockMethod = 'cmr_falabella';
+        currentAccountNumber = 'CMR Falabella';
       }
       continue;
     }
@@ -520,6 +587,12 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
             fingerprint,
             occurrenceIndex,
             paymentMethod: currentBlockMethod,
+            accountNumber: currentAccountNumber,
+            channelOrBranch: 'Cartola',
+            balanceAfter: null,
+            originalTotalAmount: amount,
+            rawLineText: line,
+            glosaExplanation: explainBankGlosa(rawDesc, amount, '', currentAccountNumber),
             sourceLabel: 'Cartola'
           });
         }
@@ -538,6 +611,8 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
     let flow = isIncomingByPrefix ? 'in' : 'out';
     let sourceLabel = '';
     let pendingInstallmentsCount = 0;
+    let balanceAfter = null;
+    let originalTotalAmount = 0;
 
     // Si existe mapa de cabeceras con columnas explícitas Cargo / Abono
     if (headerMap && (headerMap.cargoIdx >= 0 || headerMap.abonoIdx >= 0)) {
@@ -549,6 +624,9 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
       } else if (abonoAmt > 0) {
         amount = abonoAmt;
         flow = 'in';
+      }
+      if (headerMap.saldoIdx >= 0 && parts[headerMap.saldoIdx] !== '') {
+        balanceAfter = cleanChileanAmount(parts[headerMap.saldoIdx]);
       }
       if (headerMap.cuotaIdx >= 0 && isInstallmentSpec(parts[headerMap.cuotaIdx])) {
         rawDescription = `${rawDescription} CUOTA ${parts[headerMap.cuotaIdx]}`;
@@ -564,6 +642,7 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
 
       const montoAmt = cleanChileanAmount(rawMontoCell);
       const valorCuotaAmt = cleanChileanAmount(rawValorCuotaCell);
+      originalTotalAmount = montoAmt > 0 ? montoAmt : valorCuotaAmt;
 
       // En CMR Falabella: si hay VALOR CUOTA (> 0) y CUOTAS PENDIENTES > 0, el cobro del mes es VALOR CUOTA (no el monto histórico total)
       if (valorCuotaAmt > 0 && (pendingInstallmentsCount > 0 || montoAmt === 0)) {
@@ -608,7 +687,10 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
             amount = amtCol4;
             flow = 'in';
           }
-          sourceLabel = isBancoDeChileFormat ? 'Banco de Chile (Fan/Vista)' : col2 || 'Cartola';
+          if (parts[dateColIdx + 5]) {
+            balanceAfter = cleanChileanAmount(parts[dateColIdx + 5]);
+          }
+          sourceLabel = col2 || (isBancoDeChileFormat ? 'Banco de Chile (Fan/Vista)' : 'Cartola');
         } else if (parts.length >= dateColIdx + 5) {
           // Formato 5 columnas: Fecha;Descripción;Cargos;Abonos;Saldo (ignorar col4 que es Saldo)
           if (amtCol2 > 0) {
@@ -617,6 +699,9 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
           } else if (amtCol3 > 0) {
             amount = amtCol3;
             flow = 'in';
+          }
+          if (amtCol4 > 0) {
+            balanceAfter = amtCol4;
           }
           sourceLabel = isBancoDeChileFormat ? 'Banco de Chile' : 'Cartola';
         } else {
@@ -646,6 +731,7 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
       const resolvedPm = sourceLabel
         ? guessPaymentMethodFromSource(sourceLabel, currentBlockMethod)
         : currentBlockMethod;
+      const nonEmptyCells = parts.filter(Boolean).join(' | ');
       parsedRows.push({
         rowId: `stmt_${i}_${Date.now()}`,
         date: dateISO,
@@ -653,6 +739,12 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
         rawDescription,
         normalizedMerchant: normalizeBankDescription(cleanDesc),
         amount,
+        originalTotalAmount: originalTotalAmount || amount,
+        balanceAfter,
+        channelOrBranch: sourceLabel || (currentBlockMethod === 'cmr_falabella' ? 'Titular CMR' : 'Banco de Chile'),
+        accountNumber: currentAccountNumber,
+        rawLineText: nonEmptyCells,
+        glosaExplanation: explainBankGlosa(rawDescription, amount, sourceLabel, currentAccountNumber),
         flow,
         fingerprint,
         occurrenceIndex,
@@ -661,6 +753,19 @@ export function parseBankStatementText(rawText, fallbackYearMonth = '2026-10', d
         sourceLabel: sourceLabel || 'Cartola'
       });
     }
+  }
+
+  // Vincular contexto cronológico (movimiento inmediatamente anterior y posterior en la misma cuenta)
+  for (let idx = 0; idx < parsedRows.length; idx++) {
+    const curr = parsedRows[idx];
+    const prevSameAcc = parsedRows[idx - 1] && parsedRows[idx - 1].accountNumber === curr.accountNumber
+      ? `${parsedRows[idx - 1].date}: ${parsedRows[idx - 1].description} ($${Number(parsedRows[idx - 1].amount).toLocaleString('es-CL')})`
+      : null;
+    const nextSameAcc = parsedRows[idx + 1] && parsedRows[idx + 1].accountNumber === curr.accountNumber
+      ? `${parsedRows[idx + 1].date}: ${parsedRows[idx + 1].description} ($${Number(parsedRows[idx + 1].amount).toLocaleString('es-CL')})`
+      : null;
+    curr.neighborBefore = prevSameAcc;
+    curr.neighborAfter = nextSameAcc;
   }
 
   return parsedRows;
