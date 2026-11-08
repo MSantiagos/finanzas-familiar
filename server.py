@@ -30,17 +30,17 @@ DEFAULT_FIXED_ORDER = [
 ]
 
 DEFAULT_CATEGORIES_CATALOG = [
-    {"id": "supermercado", "name": "Supermercado y Feria", "icon": "🛒", "color": "#10b981", "group": "esencial", "defaultBudget": 420000, "description": "Lider, Jumbo, Santa Isabel, feria libre, panadería, carnicería"},
-    {"id": "hija", "name": "Hija (Pañales, Leche, Ropa)", "icon": "👶", "color": "#ec4899", "group": "esencial", "defaultBudget": 140000, "description": "Pañales, leche/fórmula, ropa bebé, controles pediátricos, juguetes"},
+    {"id": "supermercado", "name": "Supermercado y Feria", "icon": "🛒", "color": "#10b981", "group": "esencial", "defaultBudget": 450000, "description": "Lider, Jumbo, Santa Isabel, feria libre, panadería, carnicería"},
+    {"id": "hija", "name": "Hija (Pañales, Leche, Ropa)", "icon": "👶", "color": "#ec4899", "group": "esencial", "defaultBudget": 155000, "description": "Pañales, leche/fórmula, ropa bebé, controles pediátricos, juguetes"},
     {"id": "vivienda_fijos", "name": "Vivienda y Cuentas Fijas", "icon": "🏠", "color": "#3b82f6", "group": "fijo", "defaultBudget": 850000, "description": "Arriendo/Dividendo, Gastos Comunes, Luz, Agua, Gas, Internet"},
-    {"id": "salud_farmacia", "name": "Salud y Farmacia", "icon": "💊", "color": "#06b6d4", "group": "esencial", "defaultBudget": 80000, "description": "Cruz Verde, Salcobrand, Ahumada, bonos médicos, exámenes"},
-    {"id": "transporte", "name": "Transporte, Auto y Bencina", "icon": "🚗", "color": "#f59e0b", "group": "esencial", "defaultBudget": 130000, "description": "Copec, Shell, TAG, Bip!, Uber/Cabify, estacionamientos"},
-    {"id": "delivery_salidas", "name": "Delivery, Salidas y Cafés", "icon": "🍔", "color": "#ef4444", "group": "estilo_vida", "defaultBudget": 100000, "description": "PedidosYa, Uber Eats, restaurantes, helados, cafés, paseos"},
-    {"id": "hogar_varios", "name": "Hogar, Aseo y Varios", "icon": "🧹", "color": "#8b5cf6", "group": "esencial", "defaultBudget": 60000, "description": "Sodimac, Casaideas, artículos de aseo, reparaciones, regalos"},
-    {"id": "gatos_mascotas", "name": "Gatos (Comida, Arena y Vet)", "icon": "🐱", "color": "#a855f7", "group": "esencial", "defaultBudget": 55000, "description": "Alimento gatos, arena sanitaria, Churu, veterinario, antiparasitarios"},
-    {"id": "suscripciones", "name": "Suscripciones y Apps", "icon": "📺", "color": "#6366f1", "group": "fijo", "defaultBudget": 25000, "description": "Netflix, Spotify, iCloud, YouTube, Disney+, ChatGPT, almacenamiento nube"},
-    {"id": "gustos_personales", "name": "Gustos y Compras Personales", "icon": "🎁", "color": "#f97316", "group": "estilo_vida", "defaultBudget": 80000, "description": "Ropa adultos, Falabella, MercadoLibre, hobbies, antojos"},
-    {"id": "imprevistos", "name": "Imprevistos y Otros", "icon": "🚨", "color": "#64748b", "group": "esencial", "defaultBudget": 50000, "description": "Gastos no planificados o emergencias menores del mes"},
+    {"id": "salud_farmacia", "name": "Salud y Farmacia", "icon": "💊", "color": "#06b6d4", "group": "esencial", "defaultBudget": 85000, "description": "Cruz Verde, Salcobrand, Ahumada, bonos médicos, exámenes"},
+    {"id": "transporte", "name": "Transporte, Auto y Bencina", "icon": "🚗", "color": "#f59e0b", "group": "esencial", "defaultBudget": 140000, "description": "Copec, Shell, TAG, Bip!, Uber/Cabify, estacionamientos"},
+    {"id": "delivery_salidas", "name": "Delivery, Salidas y Cafés", "icon": "🍔", "color": "#ef4444", "group": "estilo_vida", "defaultBudget": 105000, "description": "PedidosYa, Uber Eats, restaurantes, helados, cafés, paseos"},
+    {"id": "hogar_varios", "name": "Hogar, Aseo y Varios", "icon": "🧹", "color": "#8b5cf6", "group": "esencial", "defaultBudget": 70000, "description": "Sodimac, Casaideas, artículos de aseo, reparaciones, regalos"},
+    {"id": "gatos_mascotas", "name": "Gatos (Comida, Arena y Vet)", "icon": "🐱", "color": "#a855f7", "group": "esencial", "defaultBudget": 65000, "description": "Alimento gatos, arena sanitaria, Churu, veterinario, antiparasitarios"},
+    {"id": "suscripciones", "name": "Suscripciones y Apps", "icon": "📺", "color": "#6366f1", "group": "fijo", "defaultBudget": 35000, "description": "Netflix, Spotify, iCloud, YouTube, Disney+, ChatGPT, almacenamiento nube"},
+    {"id": "gustos_personales", "name": "Gustos y Compras Personales", "icon": "🎁", "color": "#f97316", "group": "estilo_vida", "defaultBudget": 85000, "description": "Ropa adultos, Falabella, MercadoLibre, hobbies, antojos"},
+    {"id": "imprevistos", "name": "Imprevistos y Otros", "icon": "🚨", "color": "#64748b", "group": "esencial", "defaultBudget": 60000, "description": "Gastos no planificados o emergencias menores del mes"},
 ]
 
 

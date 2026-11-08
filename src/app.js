@@ -1,7 +1,7 @@
 import {
   PAYMENT_METHODS,
   SAMPLE_BANK_STATEMENT_TEXT
-} from './data/defaults.js?v=13';
+} from './data/defaults.js?v=14';
 import {
   loadState,
   saveState,
@@ -17,7 +17,7 @@ import {
   setupAutoOnlineSync,
   exportStateToJsonString,
   importStateFromJsonString
-} from './services/storage.js?v=13';
+} from './services/storage.js?v=14';
 import {
   parseBankStatementText,
   reconcileStatementRows,
@@ -25,19 +25,19 @@ import {
   formatLiveCLPInput,
   normalizeContactKey,
   extractContactDisplayName
-} from './services/reconciler.js?v=13';
+} from './services/reconciler.js?v=14';
 import {
   scanReceiptWithGemini,
   classifyStatementRowsWithGemini,
   getDemoScannedReceipt,
   generateMonthlyFamilyAuditWithGemini
-} from './services/geminiScanner.js?v=13';
-import { exportStateToExcel } from './services/excelExport.js?v=13';
+} from './services/geminiScanner.js?v=14';
+import { exportStateToExcel } from './services/excelExport.js?v=14';
 import {
   parseQuickNaturalExpense,
   buildInstallmentTransactions,
   getQuickPresetsForAuthor
-} from './services/smartInput.js?v=13';
+} from './services/smartInput.js?v=14';
 import {
   calculateMonthlyFinancialSummary,
   calculateBurnRateAndProjection,
@@ -49,8 +49,9 @@ import {
   detectAntExpensesAndSubscriptions,
   calculateMultiMonthComparison,
   clonePreviousMonthBudget,
+  distributeBudgetProportionally,
   buildCoupleWhatsAppMessages
-} from './domain/financialEngine.js?v=13';
+} from './domain/financialEngine.js?v=14';
 
 // Estado global en memoria de la aplicación
 let appState = loadState();
@@ -1805,20 +1806,55 @@ function renderBudgetTab(metrics) {
     ${renderAntExpensesAndComparisonCard(metrics)}
 
     <section class="card-panel mt-section">
-      <div class="section-header-row">
-        <div>
-          <h2 class="section-title">🚦 Semáforo por Categoría (Aguja 📍 = Día ${metrics.currentDay})</h2>
-          <p class="section-subtitle">Si la barra de color está a la izquierda de la aguja 📍 Hoy, vas ganándole al mes</p>
-        </div>
-        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
-          <button type="button" class="btn-secondary" data-action="clone-prev-budget">
-            📋 Copiar Presupuesto del Mes Anterior
-          </button>
-          <button type="button" class="btn-secondary" data-action="toggle-edit-budgets">
-            ${isEditingBudgets ? '✖️ Cancelar' : '✏️ Ajustar Presupuestos'}
-          </button>
-        </div>
-      </div>
+      ${(() => {
+        const spendableTarget = Math.max(
+          0,
+          Math.round(Number(metrics.monthCfg.incomeTarget || 2350000) - Number(metrics.monthCfg.savingsGoal || 250000))
+        );
+        const totalCatBudgeted = categories.reduce(
+          (acc, c) => acc + Math.round(Number(metrics.monthCfg.categories?.[c.id] ?? c.defaultBudget ?? 0)),
+          0
+        );
+        const diff = spendableTarget - totalCatBudgeted;
+        const diffClass = diff === 0 ? 'bar-green' : diff > 0 ? 'bar-yellow' : 'bar-red';
+        const diffLabel =
+          diff === 0
+            ? '✅ 100% Cuadrado con el Disponible'
+            : diff > 0
+              ? `💡 Faltan ${formatCLP(diff)} por distribuir`
+              : `⚠️ Excede el disponible en ${formatCLP(Math.abs(diff))}`;
+
+        return `
+          <div class="section-header-row">
+            <div>
+              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;">
+                <h2 class="section-title" style="margin:0;">🚦 Semáforo por Categoría (Aguja 📍 = Día ${metrics.currentDay})</h2>
+                <span class="sem-badge ${diffClass}" style="font-size:0.75rem;">
+                  Suma Presupuestos: ${formatCLP(totalCatBudgeted)} / ${formatCLP(spendableTarget)} (${diffLabel})
+                </span>
+              </div>
+              <p class="section-subtitle" style="margin-top:4px;">Si la barra de color está a la izquierda de la aguja 📍 Hoy, vas ganándole al mes</p>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+              <button
+                type="button"
+                class="btn-secondary"
+                data-action="quick-distribute-budgets"
+                style="border-color:var(--accent-primary);color:var(--accent-primary);font-weight:600;"
+                title="Distribuye automáticamente el Ingreso Disponible (Ingreso - Ahorro) entre todas las categorías en base a proporciones"
+              >
+                ⚖️ Distribuir Ingreso por Proporciones
+              </button>
+              <button type="button" class="btn-secondary" data-action="clone-prev-budget">
+                📋 Copiar Mes Anterior
+              </button>
+              <button type="button" class="btn-secondary" data-action="toggle-edit-budgets">
+                ${isEditingBudgets ? '✖️ Cerrar Editor' : '✏️ Ajustar Presupuestos'}
+              </button>
+            </div>
+          </div>
+        `;
+      })()}
 
       ${isEditingBudgets ? renderBudgetEditorForm(metrics) : `
         <div class="budget-bars-list">
@@ -2074,37 +2110,111 @@ function renderPatrimonyVaultSection(metrics) {
 
 function renderBudgetEditorForm(metrics) {
   const categories = appState.categories || [];
+  const incomeTarget = Math.round(Number(metrics.monthCfg.incomeTarget || 2350000));
+  const savingsGoal = Math.round(Number(metrics.monthCfg.savingsGoal || 250000));
+  const spendableTarget = Math.max(0, incomeTarget - savingsGoal);
+  const currentSum = categories.reduce(
+    (acc, cat) => acc + Math.round(Number(metrics.monthCfg.categories?.[cat.id] ?? cat.defaultBudget ?? 0)),
+    0
+  );
+  const diff = spendableTarget - currentSum;
+  const allocatedPct = spendableTarget > 0 ? Math.round((currentSum / spendableTarget) * 100) : 0;
+  const barWidth = Math.min(100, Math.max(0, allocatedPct));
+  const diffClass = diff === 0 ? 'bar-green' : diff > 0 ? 'bar-yellow' : 'bar-red';
+  const diffText =
+    diff === 0
+      ? '✅ ¡100% Cuadrado! La suma calza exacto con tu ingreso disponible'
+      : diff > 0
+        ? `💡 Quedan ${formatCLP(diff)} sin asignar (toca "Distribuir por Proporciones" para repartirlos)`
+        : `⚠️ Te pasaste por ${formatCLP(Math.abs(diff))} sobre tu ingreso disponible tras ahorro`;
+
   return `
     <form id="budget-editor-form" class="budget-editor-box">
       <div class="form-row-two">
         <div class="input-group">
           <label>💰 Ingreso Familiar Mensual Esperado (CLP)</label>
-          <input type="text" inputmode="numeric" name="incomeTarget" class="text-input live-clp-input" value="${formatLiveCLPInput(metrics.monthCfg.incomeTarget || 2350000)}" required />
+          <input type="text" inputmode="numeric" id="budget-income-input" name="incomeTarget" class="text-input live-clp-input" value="${formatLiveCLPInput(incomeTarget)}" required />
         </div>
         <div class="input-group">
           <label>🛡️ Meta de Ahorro Mensual Intocable (CLP)</label>
-          <input type="text" inputmode="numeric" name="savingsGoal" class="text-input live-clp-input" value="${formatLiveCLPInput(metrics.monthCfg.savingsGoal || 250000)}" required />
+          <input type="text" inputmode="numeric" id="budget-savings-input" name="savingsGoal" class="text-input live-clp-input" value="${formatLiveCLPInput(savingsGoal)}" required />
+        </div>
+      </div>
+
+      <!-- Barra de Suma Dinámica y Distribución Proporcional en Tiempo Real -->
+      <div id="budget-live-balance-box" style="background:var(--bg-subtle);border:1.5px solid var(--border-strong);border-radius:12px;padding:12px 14px;margin:12px 0;">
+        <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">
+          <div style="font-size:0.84rem;">
+            <span>Disponible tras Ahorro: <strong id="budget-live-spendable">${formatCLP(spendableTarget)}</strong></span>
+            <span style="margin:0 6px;">•</span>
+            <span>Suma Categorías: <strong id="budget-live-sum">${formatCLP(currentSum)}</strong> (<span id="budget-live-pct">${allocatedPct}%</span>)</span>
+          </div>
+          <span id="budget-live-diff-badge" class="sem-badge ${diffClass}" style="font-size:0.78rem;">
+            ${diffText}
+          </span>
+        </div>
+
+        <div class="progress-track" style="height:8px;margin-bottom:10px;">
+          <div id="budget-live-progress-bar" class="progress-fill ${diffClass}" style="width:${barWidth}%;"></div>
+        </div>
+
+        <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px;">
+          <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;cursor:pointer;font-weight:500;">
+            <input type="checkbox" id="budget-auto-adjust-check" checked style="width:16px;height:16px;accent-color:var(--accent-primary);" />
+            <span>🔄 <strong>Auto-cuadrar dinámicamente:</strong> al editar un monto, reajustar el resto proporcionalmente para que siempre sume el disponible</span>
+          </label>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;">
+            <button
+              type="button"
+              class="btn-secondary"
+              data-action="editor-distribute-proportional"
+              data-mode="current"
+              style="padding:6px 12px;font-size:0.78rem;border-color:var(--accent-primary);color:var(--accent-primary);font-weight:600;"
+            >
+              ⚖️ Distribuir según Proporciones Actuales (100%)
+            </button>
+            <button
+              type="button"
+              class="btn-secondary"
+              data-action="editor-distribute-proportional"
+              data-mode="recommended"
+              style="padding:6px 12px;font-size:0.78rem;"
+            >
+              📊 Aplicar Proporción Ideal Recomendada
+            </button>
+          </div>
         </div>
       </div>
 
       <h4 style="margin:12px 0 8px;font-size:0.88rem;">Presupuesto Máximo por Categoría para ${getMonthNameLabel(activeYearMonth)}</h4>
       <div class="editor-cats-grid">
-        ${categories.map((cat) => `
-          <div class="input-group">
-            <label>${cat.icon} ${cat.name}</label>
-            <input
-              type="text"
-              inputmode="numeric"
-              name="cat_${cat.id}"
-              class="text-input live-clp-input"
-              value="${formatLiveCLPInput(metrics.monthCfg.categories?.[cat.id] ?? cat.defaultBudget ?? 0)}"
-              required
-            />
-          </div>
-        `).join('')}
+        ${categories.map((cat) => {
+          const catAmt = Math.round(Number(metrics.monthCfg.categories?.[cat.id] ?? cat.defaultBudget ?? 0));
+          const catPct = spendableTarget > 0 ? Math.round((catAmt / spendableTarget) * 1000) / 10 : 0;
+          return `
+            <div class="input-group">
+              <label style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
+                <span>${cat.icon} ${cat.name}</span>
+                <span style="display:flex;align-items:center;gap:4px;">
+                  <span data-cat-lock-badge="${cat.id}" style="display:none;font-size:0.68rem;background:#e0e7ff;color:#4338ca;padding:1px 6px;border-radius:999px;cursor:pointer;" title="Fijado manualmente (toca para desbloquear)">📌 Fijo</span>
+                  <span class="sem-badge bar-green" data-cat-pct-badge="${cat.id}" style="font-size:0.7rem;padding:1px 6px;">${catPct}%</span>
+                </span>
+              </label>
+              <input
+                type="text"
+                inputmode="numeric"
+                name="cat_${cat.id}"
+                data-cat-id="${cat.id}"
+                class="text-input live-clp-input budget-cat-input"
+                value="${formatLiveCLPInput(catAmt)}"
+                required
+              />
+            </div>
+          `;
+        }).join('')}
       </div>
 
-      <button type="submit" class="btn-primary-giant">
+      <button type="submit" class="btn-primary-giant" style="margin-top:12px;">
         💾 Guardar Presupuestos de ${getMonthNameLabel(activeYearMonth)}
       </button>
     </form>
@@ -2963,9 +3073,172 @@ function attachDynamicInputListeners() {
     };
   }
 
-  // Editor de Presupuestos
+  // Editor de Presupuestos con Suma Dinámica en Vivo y Auto-Ajuste Proporcional
   const budgetEditorForm = document.getElementById('budget-editor-form');
   if (budgetEditorForm) {
+    const categories = appState.categories || [];
+    const baselineAmounts = {};
+    const lockedCategoryIds = new Set();
+
+    const readFormAmounts = () => {
+      const incInput = document.getElementById('budget-income-input');
+      const savInput = document.getElementById('budget-savings-input');
+      const incomeTarget = cleanChileanAmount(incInput ? incInput.value : 2350000);
+      const savingsGoal = cleanChileanAmount(savInput ? savInput.value : 250000);
+      const currentAmounts = {};
+      categories.forEach((cat) => {
+        const el = budgetEditorForm.querySelector(`input[name="cat_${cat.id}"]`);
+        currentAmounts[cat.id] = cleanChileanAmount(el ? el.value : 0);
+      });
+      return { incomeTarget, savingsGoal, currentAmounts };
+    };
+
+    // Inicializar baseline con los valores iniciales del formulario
+    const initRead = readFormAmounts();
+    Object.assign(baselineAmounts, initRead.currentAmounts);
+
+    const refreshLiveBudgetSummaryDOM = () => {
+      const { incomeTarget, savingsGoal, currentAmounts } = readFormAmounts();
+      const spendableTarget = Math.max(0, incomeTarget - savingsGoal);
+      const currentSum = Object.values(currentAmounts).reduce((acc, v) => acc + Number(v || 0), 0);
+      const diff = spendableTarget - currentSum;
+      const allocatedPct = spendableTarget > 0 ? Math.round((currentSum / spendableTarget) * 100) : 0;
+      const barWidth = Math.min(100, Math.max(0, allocatedPct));
+      const diffClass = diff === 0 ? 'bar-green' : diff > 0 ? 'bar-yellow' : 'bar-red';
+      const diffText =
+        diff === 0
+          ? '✅ ¡100% Cuadrado! La suma calza exacto con tu ingreso disponible'
+          : diff > 0
+            ? `💡 Quedan ${formatCLP(diff)} sin asignar (toca "Distribuir por Proporciones" para repartirlos)`
+            : `⚠️ Te pasaste por ${formatCLP(Math.abs(diff))} sobre tu ingreso disponible tras ahorro`;
+
+      const spendableEl = document.getElementById('budget-live-spendable');
+      const sumEl = document.getElementById('budget-live-sum');
+      const pctEl = document.getElementById('budget-live-pct');
+      const badgeEl = document.getElementById('budget-live-diff-badge');
+      const barEl = document.getElementById('budget-live-progress-bar');
+
+      if (spendableEl) spendableEl.textContent = formatCLP(spendableTarget);
+      if (sumEl) sumEl.textContent = formatCLP(currentSum);
+      if (pctEl) pctEl.textContent = `${allocatedPct}%`;
+      if (badgeEl) {
+        badgeEl.className = `sem-badge ${diffClass}`;
+        badgeEl.textContent = diffText;
+      }
+      if (barEl) {
+        barEl.className = `progress-fill ${diffClass}`;
+        barEl.style.width = `${barWidth}%`;
+      }
+
+      categories.forEach((cat) => {
+        const amt = Number(currentAmounts[cat.id] || 0);
+        const catPct = spendableTarget > 0 ? Math.round((amt / spendableTarget) * 1000) / 10 : 0;
+        const pctBadge = budgetEditorForm.querySelector(`[data-cat-pct-badge="${cat.id}"]`);
+        if (pctBadge) {
+          pctBadge.textContent = `${catPct}%`;
+        }
+        const lockBadge = budgetEditorForm.querySelector(`[data-cat-lock-badge="${cat.id}"]`);
+        if (lockBadge) {
+          lockBadge.style.display = lockedCategoryIds.has(cat.id) ? 'inline-block' : 'none';
+        }
+      });
+    };
+
+    budgetEditorForm.querySelectorAll('[data-cat-lock-badge]').forEach((badge) => {
+      badge.onclick = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const cid = badge.getAttribute('data-cat-lock-badge');
+        if (cid && lockedCategoryIds.has(cid)) {
+          lockedCategoryIds.delete(cid);
+          refreshLiveBudgetSummaryDOM();
+        }
+      };
+    });
+
+    budgetEditorForm.addEventListener('input', (e) => {
+      const target = e.target;
+      if (!target || target.tagName !== 'INPUT' || target.type === 'checkbox') return;
+
+      const autoAdjust = Boolean(document.getElementById('budget-auto-adjust-check')?.checked);
+      const editedCatId = target.dataset?.catId || null;
+
+      if (editedCatId) {
+        const typedVal = cleanChileanAmount(target.value);
+        baselineAmounts[editedCatId] = typedVal;
+        if (autoAdjust) {
+          lockedCategoryIds.add(editedCatId);
+          // Si el usuario ya fijó todas las categorías, liberar todas menos la actual para poder cuadrar el resto
+          if (lockedCategoryIds.size >= categories.length) {
+            lockedCategoryIds.clear();
+            lockedCategoryIds.add(editedCatId);
+          }
+          const { incomeTarget, savingsGoal } = readFormAmounts();
+          const dist = distributeBudgetProportionally({
+            incomeTarget,
+            savingsGoal,
+            categories,
+            currentAmounts: baselineAmounts,
+            mode: 'current',
+            lockedCategoryIds: Array.from(lockedCategoryIds)
+          });
+          categories.forEach((cat) => {
+            if (cat.id !== editedCatId && !lockedCategoryIds.has(cat.id)) {
+              const inp = budgetEditorForm.querySelector(`input[name="cat_${cat.id}"]`);
+              if (inp) {
+                inp.value = formatLiveCLPInput(dist.allocations[cat.id]);
+              }
+            }
+          });
+        }
+      } else if (target.name === 'incomeTarget' || target.name === 'savingsGoal') {
+        if (autoAdjust) {
+          const { incomeTarget, savingsGoal } = readFormAmounts();
+          const dist = distributeBudgetProportionally({
+            incomeTarget,
+            savingsGoal,
+            categories,
+            currentAmounts: baselineAmounts,
+            mode: 'current',
+            lockedCategoryIds: Array.from(lockedCategoryIds)
+          });
+          categories.forEach((cat) => {
+            if (!lockedCategoryIds.has(cat.id)) {
+              const inp = budgetEditorForm.querySelector(`input[name="cat_${cat.id}"]`);
+              if (inp) {
+                inp.value = formatLiveCLPInput(dist.allocations[cat.id]);
+                baselineAmounts[cat.id] = dist.allocations[cat.id];
+              }
+            }
+          });
+        }
+      }
+
+      refreshLiveBudgetSummaryDOM();
+    });
+
+    budgetEditorForm._distributeProportionally = (mode = 'current') => {
+      lockedCategoryIds.clear();
+      const { incomeTarget, savingsGoal, currentAmounts } = readFormAmounts();
+      const dist = distributeBudgetProportionally({
+        incomeTarget,
+        savingsGoal,
+        categories,
+        currentAmounts,
+        mode,
+        lockedCategoryIds: []
+      });
+      categories.forEach((cat) => {
+        const inp = budgetEditorForm.querySelector(`input[name="cat_${cat.id}"]`);
+        const newAmt = dist.allocations[cat.id] ?? 0;
+        if (inp) {
+          inp.value = formatLiveCLPInput(newAmt);
+        }
+        baselineAmounts[cat.id] = newAmt;
+      });
+      refreshLiveBudgetSummaryDOM();
+    };
+
     budgetEditorForm.onsubmit = (e) => {
       e.preventDefault();
       const fd = new FormData(budgetEditorForm);
@@ -2988,7 +3261,7 @@ function attachDynamicInputListeners() {
 
       isEditingBudgets = false;
       saveState(appState);
-      showToast('✅ Presupuestos y meta de ahorro actualizados', 'success');
+      showToast('✅ Presupuestos y meta de ahorro actualizados y sincronizados', 'success');
       renderApp();
     };
   }
@@ -3604,6 +3877,44 @@ document.addEventListener('click', async (e) => {
       showToast('📋 Presupuesto base aplicado para este mes', 'success');
     }
     renderApp();
+    return;
+  }
+
+  if (action === 'quick-distribute-budgets') {
+    const monthCfg = appState.monthlyBudgets?.[activeYearMonth];
+    if (!monthCfg) return;
+    const categories = appState.categories || [];
+    const dist = distributeBudgetProportionally({
+      incomeTarget: monthCfg.incomeTarget || 2350000,
+      savingsGoal: monthCfg.savingsGoal || 250000,
+      categories,
+      currentAmounts: monthCfg.categories || {},
+      mode: 'current'
+    });
+    const nowISO = new Date().toISOString();
+    monthCfg.categories = { ...dist.allocations };
+    monthCfg.updatedAt = nowISO;
+    saveState(appState);
+    showToast(
+      `⚖️ ${formatCLP(dist.spendableTarget)} distribuidos proporcionalmente en tus ${categories.length} categorías (100% cuadrado)`,
+      'success'
+    );
+    renderApp();
+    return;
+  }
+
+  if (action === 'editor-distribute-proportional') {
+    const mode = btn.dataset.mode === 'recommended' ? 'recommended' : 'current';
+    const formEl = document.getElementById('budget-editor-form');
+    if (formEl && typeof formEl._distributeProportionally === 'function') {
+      formEl._distributeProportionally(mode);
+      showToast(
+        mode === 'recommended'
+          ? '📊 Proporción ideal recomendada aplicada al 100% de tu ingreso disponible'
+          : '⚖️ Presupuestos ajustados proporcionalmente al 100% de tu ingreso disponible',
+        'success'
+      );
+    }
     return;
   }
 

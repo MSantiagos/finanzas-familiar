@@ -6,7 +6,7 @@ export const DEFAULT_CATEGORIES = [
     icon: '🛒',
     color: '#10b981',
     group: 'esencial',
-    defaultBudget: 420000,
+    defaultBudget: 450000,
     description: 'Lider, Jumbo, feria, verdulería, carnicería, panadería'
   },
   {
@@ -15,7 +15,7 @@ export const DEFAULT_CATEGORIES = [
     icon: '👶',
     color: '#ec4899',
     group: 'esencial',
-    defaultBudget: 140000,
+    defaultBudget: 155000,
     description: 'Pañales, toallitas, leche/alimentación, ropa, juguetes, pediatra'
   },
   {
@@ -33,7 +33,7 @@ export const DEFAULT_CATEGORIES = [
     icon: '💊',
     color: '#06b6d4',
     group: 'esencial',
-    defaultBudget: 80000,
+    defaultBudget: 85000,
     description: 'Cruz Verde, Salcobrand, Ahumada, consultas médicas, exámenes'
   },
   {
@@ -42,7 +42,7 @@ export const DEFAULT_CATEGORIES = [
     icon: '🚗',
     color: '#f59e0b',
     group: 'esencial',
-    defaultBudget: 130000,
+    defaultBudget: 140000,
     description: 'Copec, Shell, TAG, estacionamientos, Bip!, Uber, mantención'
   },
   {
@@ -51,7 +51,7 @@ export const DEFAULT_CATEGORIES = [
     icon: '🍔',
     color: '#ef4444',
     group: 'estilo_vida',
-    defaultBudget: 100000,
+    defaultBudget: 105000,
     description: 'PedidosYa, Uber Eats, restaurantes, helados, cafés, paseos'
   },
   {
@@ -60,7 +60,7 @@ export const DEFAULT_CATEGORIES = [
     icon: '🧹',
     color: '#8b5cf6',
     group: 'esencial',
-    defaultBudget: 60000,
+    defaultBudget: 70000,
     description: 'Sodimac, Casaideas, artículos de aseo, reparaciones, regalos'
   },
   {
@@ -69,7 +69,7 @@ export const DEFAULT_CATEGORIES = [
     icon: '🐱',
     color: '#a855f7',
     group: 'esencial',
-    defaultBudget: 55000,
+    defaultBudget: 65000,
     description: 'Alimento gatos, arena sanitaria, Churu, veterinario, antiparasitarios'
   },
   {
@@ -78,7 +78,7 @@ export const DEFAULT_CATEGORIES = [
     icon: '📺',
     color: '#6366f1',
     group: 'fijo',
-    defaultBudget: 25000,
+    defaultBudget: 35000,
     description: 'Netflix, Spotify, iCloud, YouTube, Disney+, ChatGPT, almacenamiento nube'
   },
   {
@@ -87,7 +87,7 @@ export const DEFAULT_CATEGORIES = [
     icon: '🎁',
     color: '#f97316',
     group: 'estilo_vida',
-    defaultBudget: 80000,
+    defaultBudget: 85000,
     description: 'Ropa adultos, Falabella, MercadoLibre, hobbies, antojos'
   },
   {
@@ -96,7 +96,7 @@ export const DEFAULT_CATEGORIES = [
     icon: '🚨',
     color: '#64748b',
     group: 'esencial',
-    defaultBudget: 50000,
+    defaultBudget: 60000,
     description: 'Gastos no planificados o emergencias menores del mes'
   }
 ];

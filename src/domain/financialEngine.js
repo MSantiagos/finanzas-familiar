@@ -6,17 +6,17 @@
  */
 
 const FALLBACK_CATEGORIES = [
-  { id: 'supermercado', name: 'Supermercado y Feria', icon: '🛒', group: 'esencial', defaultBudget: 420000 },
-  { id: 'hija', name: 'Hija (Pañales, Leche, Ropa)', icon: '👶', group: 'esencial', defaultBudget: 140000 },
+  { id: 'supermercado', name: 'Supermercado y Feria', icon: '🛒', group: 'esencial', defaultBudget: 450000 },
+  { id: 'hija', name: 'Hija (Pañales, Leche, Ropa)', icon: '👶', group: 'esencial', defaultBudget: 155000 },
   { id: 'vivienda_fijos', name: 'Vivienda y Cuentas Fijas', icon: '🏠', group: 'fijo', defaultBudget: 850000 },
-  { id: 'salud_farmacia', name: 'Salud y Farmacia', icon: '💊', group: 'esencial', defaultBudget: 80000 },
-  { id: 'transporte', name: 'Transporte, Auto y Bencina', icon: '🚗', group: 'esencial', defaultBudget: 130000 },
-  { id: 'delivery_salidas', name: 'Delivery, Salidas y Cafés', icon: '🍔', group: 'estilo_vida', defaultBudget: 100000 },
-  { id: 'hogar_varios', name: 'Hogar, Aseo y Varios', icon: '🧹', group: 'esencial', defaultBudget: 60000 },
-  { id: 'gatos_mascotas', name: 'Gatos (Comida, Arena y Vet)', icon: '🐱', group: 'esencial', defaultBudget: 55000 },
-  { id: 'suscripciones', name: 'Suscripciones y Apps', icon: '📺', group: 'fijo', defaultBudget: 25000 },
-  { id: 'gustos_personales', name: 'Gustos y Compras Personales', icon: '🎁', group: 'estilo_vida', defaultBudget: 80000 },
-  { id: 'imprevistos', name: 'Imprevistos y Otros', icon: '🚨', group: 'esencial', defaultBudget: 50000 }
+  { id: 'salud_farmacia', name: 'Salud y Farmacia', icon: '💊', group: 'esencial', defaultBudget: 85000 },
+  { id: 'transporte', name: 'Transporte, Auto y Bencina', icon: '🚗', group: 'esencial', defaultBudget: 140000 },
+  { id: 'delivery_salidas', name: 'Delivery, Salidas y Cafés', icon: '🍔', group: 'estilo_vida', defaultBudget: 105000 },
+  { id: 'hogar_varios', name: 'Hogar, Aseo y Varios', icon: '🧹', group: 'esencial', defaultBudget: 70000 },
+  { id: 'gatos_mascotas', name: 'Gatos (Comida, Arena y Vet)', icon: '🐱', group: 'esencial', defaultBudget: 65000 },
+  { id: 'suscripciones', name: 'Suscripciones y Apps', icon: '📺', group: 'fijo', defaultBudget: 35000 },
+  { id: 'gustos_personales', name: 'Gustos y Compras Personales', icon: '🎁', group: 'estilo_vida', defaultBudget: 85000 },
+  { id: 'imprevistos', name: 'Imprevistos y Otros', icon: '🚨', group: 'esencial', defaultBudget: 60000 }
 ];
 
 export const DEFAULT_CATEGORIES = FALLBACK_CATEGORIES;
@@ -1629,6 +1629,113 @@ export function clonePreviousMonthBudget(state = {}, targetYearMonth) {
   return {
     clonedFrom,
     budgetConfig
+  };
+}
+
+/**
+ * Distribuye proporcionalmente el presupuesto mensual disponible (`incomeTarget - savingsGoal`)
+ * entre todas las categorías (o entre las categorías no bloqueadas cuando se edita en vivo),
+ * redondeando a múltiplos limpios de `roundStep` (por defecto $1.000 CLP) y cuadrando el residuo
+ * exacto en la categoría de mayor peso para que la suma sea 100% igual al monto disponible.
+ */
+export function distributeBudgetProportionally({
+  incomeTarget = 2350000,
+  savingsGoal = 250000,
+  categories = DEFAULT_CATEGORIES,
+  currentAmounts = {},
+  mode = 'current',
+  lockedCategoryIds = [],
+  roundStep = 1000
+} = {}) {
+  const safeIncome = Math.max(0, Math.round(Number(incomeTarget || 0)));
+  const safeSavings = Math.max(0, Math.round(Number(savingsGoal || 0)));
+  const spendableTarget = Math.max(0, safeIncome - safeSavings);
+  const catList = Array.isArray(categories) && categories.length > 0 ? categories : DEFAULT_CATEGORIES;
+  const lockedSet = new Set(Array.isArray(lockedCategoryIds) ? lockedCategoryIds : []);
+
+  const allocations = {};
+  let lockedSum = 0;
+
+  for (const cat of catList) {
+    if (lockedSet.has(cat.id)) {
+      const val = Math.max(0, Math.round(Number(currentAmounts?.[cat.id] ?? cat.defaultBudget ?? 0)));
+      allocations[cat.id] = val;
+      lockedSum += val;
+    }
+  }
+
+  const unlockedCats = catList.filter((cat) => !lockedSet.has(cat.id));
+  const remainingToDistribute = Math.max(0, spendableTarget - lockedSum);
+
+  if (unlockedCats.length > 0) {
+    if (remainingToDistribute === 0) {
+      for (const cat of unlockedCats) {
+        allocations[cat.id] = 0;
+      }
+    } else {
+      let weights = unlockedCats.map((cat) => {
+        if (mode === 'recommended') {
+          return Math.max(1, Number(cat.defaultBudget || 50000));
+        }
+        const curr = Number(currentAmounts?.[cat.id] ?? 0);
+        return curr > 0 ? curr : 0;
+      });
+
+      let weightSum = weights.reduce((acc, w) => acc + w, 0);
+      if (weightSum <= 0) {
+        weights = unlockedCats.map((cat) => Math.max(1, Number(cat.defaultBudget || 50000)));
+        weightSum = weights.reduce((acc, w) => acc + w, 0);
+      }
+
+      const effectiveStep = remainingToDistribute >= 10000 && roundStep > 1 ? roundStep : 1;
+      let allocatedUnlockedSum = 0;
+
+      unlockedCats.forEach((cat, idx) => {
+        const rawShare = (remainingToDistribute * weights[idx]) / weightSum;
+        const rounded = Math.max(0, Math.round(rawShare / effectiveStep) * effectiveStep);
+        allocations[cat.id] = rounded;
+        allocatedUnlockedSum += rounded;
+      });
+
+      const diff = remainingToDistribute - allocatedUnlockedSum;
+      if (diff !== 0) {
+        let bestCatId = unlockedCats[0].id;
+        for (const cat of unlockedCats) {
+          if (allocations[cat.id] > allocations[bestCatId]) {
+            bestCatId = cat.id;
+          }
+        }
+        if (allocations[bestCatId] + diff >= 0) {
+          allocations[bestCatId] += diff;
+        } else {
+          let running = 0;
+          unlockedCats.forEach((cat, idx) => {
+            const exact = Math.floor((remainingToDistribute * weights[idx]) / weightSum);
+            allocations[cat.id] = exact;
+            running += exact;
+          });
+          allocations[unlockedCats[0].id] += remainingToDistribute - running;
+        }
+      }
+    }
+  }
+
+  const totalAllocated = Object.values(allocations).reduce((acc, v) => acc + Number(v || 0), 0);
+  const difference = spendableTarget - totalAllocated;
+  const percentages = {};
+  for (const cat of catList) {
+    const amt = Number(allocations[cat.id] || 0);
+    percentages[cat.id] = spendableTarget > 0 ? Math.round((amt / spendableTarget) * 1000) / 10 : 0;
+  }
+
+  return {
+    incomeTarget: safeIncome,
+    savingsGoal: safeSavings,
+    spendableTarget,
+    totalAllocated,
+    difference,
+    allocations,
+    percentages
   };
 }
 
